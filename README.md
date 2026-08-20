@@ -9,11 +9,11 @@ A plugin that cuts selected turn ranges out of a conversation and merges them in
 /klip -5.., not -3  # the last 5 turns, minus turn 3
 ```
 
-Specify ranges with the KInterval syntax (turn numbers start at 1). klip re-indexes the selected events into a new session and attaches it to the current workspace.
+klip re-indexes the selected events into a new session and attaches it to the current workspace.
 
 ## KInterval syntax
 
-A KInterval is a comma-separated list of clauses, each selecting turns by 1-based index. Negative numbers count from the end (`-1` is the last turn). All intervals are closed: both endpoints are included.
+A KInterval is a comma-separated list of clauses, each selecting turns by 1-based index. Negative numbers count from the end (`-1` is the last turn). All intervals are closed.
 
 | Form | Meaning |
 |------|---------|
@@ -40,10 +40,10 @@ Whitespace is ignored, so `1..2` and `1 .. 2` are equivalent.
 
 ## Features
 
-- **Automatic re-indexing.** Selected turns are renumbered to a contiguous `1..N` and `SessionEvent.seq` is reset to start from 0, so the new session is usable immediately.
-- **Dangling reference cleanup.** When an event references a cut-away event, it is dropped as well. The cleanup cascades until nothing references a deleted event.
-- **Customizable rules.** Re-indexing is driven by the rule tables in `src/rules.ts`. To support a third-party event type, add a rule; no engine changes are needed.
-- **Automatic naming.** New sessions are named `KLIP <source title>` to distinguish them from the source.
+- **Automatic re-indexing.** Selected turns are renumbered to a contiguous `1..N` and `SessionEvent.seq` is reset to start from 0.
+- **Dangling reference cleanup.** When an event references a cut-away event, it is dropped too, cascading until nothing references a deleted event.
+- **Customizable rules.** Re-indexing is driven by the rule tables in `src/rules.ts`; supporting a third-party event type only needs a rule, not engine changes.
+- **Automatic naming.** New sessions are named `KLIP <source title>`.
 
 ## Customizing rules
 
@@ -63,16 +63,16 @@ Rebuild (`npm run build`) and restart the profile to apply. Each event type supp
 - **`value`** — a single numeric reference (e.g. `seq`, `data.turn`). The event is dropped if the target is not in the result.
 - **`array`** — a numeric array reference (e.g. `sourceEventSeqs`). Dead members are filtered out; the event is dropped only when all members are dead.
 - **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`). It is intersected with the surviving seq set; the event is dropped only when the intersection is empty.
-- **`override: true`** — the type fully takes over its rule and skips the `*` wildcard. Only meaningful on a concrete type.
+- **`override: true`** — the type fully takes over its rule and skips the `*` wildcard.
 
 ## How it works
 
-`KInterval` (`src/k-interval.ts`) parses the range text into include/exclude intervals. `reIndexEvents` (`src/re-index.ts`) takes the selected events, renumbers them (`seq` contiguous, `turn` dense), and remaps all references, producing a valid session seed.
+`KInterval` (`src/k-interval.ts`) parses the range text into include/exclude intervals; `reIndexEvents` (`src/re-index.ts`) takes the selected events, renumbers them (`seq` contiguous, `turn` dense), and remaps all references, producing a valid session seed.
 
 Notes:
 
 - Only **completed** turns are cut. Header events (those without a `turn` field, before the first turn) are always kept.
-- The new session is created through the agent factory, so it persists and opens in the UI. It is flushed to disk and then attached to the source workspace.
+- The new session is created through the agent factory, flushed to disk, then attached to the source workspace.
 
 ## Project layout
 
