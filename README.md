@@ -1,6 +1,6 @@
 # dsh-klip
 
-A single `/klip` command cuts turn ranges out of a conversation and merges them into a brand-new session.
+Cut the parts of a conversation you want and merge them into a brand-new session.
 
 > [简体中文](./README.zh.md)
 
@@ -9,18 +9,18 @@ A single `/klip` command cuts turn ranges out of a conversation and merges them 
 /klip -5.., not -3  # the last 5 turns, minus turn 3
 ```
 
-Pick ranges with the tiny **KInterval** syntax (1-based turns). klip re-indexes the selection into a fresh session and hooks it back into your workspace — no manual steps, nothing else to configure.
+Pick your ranges with the small **KInterval** syntax (1-based turn numbers), and klip re-indexes the selection into a fresh session that's automatically hooked back into your current workspace — no manual steps, nothing else to configure.
 
 ## What it does for you
 
-- **Re-indexes automatically.** Selected `turn`s become a dense `1..N` and `SessionEvent.seq` becomes contiguous from `0`, so the new session is immediately usable.
-- **Drops dead references, and anything that points at them.** A reference to a cut-away event drops that event — and any event referencing *that* dropped event is dropped too, cascading down the chain until nothing points at a deleted event.
-- **Customizable rules.** The re-indexing is rule-driven (`src/rules.ts`): add rules for third-party event types, rebuild, restart — no engine changes.
-- **Auto-titled `KLIP <source title>`.** The new session is named so you can tell it apart from the source at a glance.
+- **Re-indexes automatically.** Selected `turn`s become a dense `1..N` and `SessionEvent.seq` runs contiguously from `0`, so the new session is immediately usable, with no gaps left behind.
+- **Cascades dangling-reference cleanup.** When an event references a cut-away event, that event is dropped too — and if another event references *that* dropped one, it drops as well, cascading outward until nothing points at a deleted event.
+- **Rules are extensible.** Re-indexing is rule-driven (`src/rules.ts`). To adapt a third-party plugin's event types, add a rule — no engine changes needed.
+- **Auto-titles the new session `KLIP <source title>`** so you can tell it apart from the source at a glance.
 
 ## Customizing rules
 
-The re-indexing is driven by two tables in `src/rules.ts` (`turnRules` remaps `turn`, `seqRules` remaps `seq` and translates references). Add a rule for an event type to adapt a third-party plugin without touching the engine:
+Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn`, and `seqRules` remaps `seq` and translates inter-event references. To adapt a third-party event type, add a single rule without touching the engine:
 
 ```ts
 // src/rules.ts
@@ -31,12 +31,12 @@ export const seqRules: ReIndexRules = {
 }
 ```
 
-Rebuild (`npm run build`) and restart the profile. Each event type can declare three reference-rule shapes:
+Rebuild (`npm run build`) and restart the profile to apply. Each event type can declare three reference-rule shapes:
 
-- **`value`** — a single numeric reference (e.g. `seq`, `data.turn`): target not in the map → the event is dropped.
-- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`): dead members are filtered out; the event drops only when all are dead.
+- **`value`** — a single numeric reference (e.g. `seq`, `data.turn`): if the target isn't in the result, the event is dropped.
+- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`): dead members are filtered out; the event drops only when all members are dead.
 - **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`): intersected with the surviving seq set; dropped only when the intersection is empty.
-- **`override: true`** — fully takes over that type, skipping the `*` wildcard (only meaningful on a concrete type).
+- **`override: true`** — lets the type fully take over its rule, skipping the `*` wildcard (only meaningful on a concrete type).
 
 ## How it works — read on only if you care
 
@@ -54,7 +54,7 @@ dsh-klip/
 ├── src/
 │   ├── index.ts          # plugin entry: /klip command, session creation, workspace attach
 │   ├── k-interval.ts     # KInterval language (pure)
-│   ├── rules.ts          # user-editable rule tables (default turnRules / seqRules)
+│   ├── rules.ts          # editable rule tables (default turnRules / seqRules)
 │   └── re-index.ts       # pure re-indexing of events into a session seed
 └── test/                 # KInterval and re-indexing tests
 ```

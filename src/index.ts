@@ -25,63 +25,6 @@ export function apply(ctx: Context): void {
   })
 }
 
-/**
- * Compose the child session from the source's agent preset, mirroring the host
- * API proxy's `fork` RPC (dsh-host-apiproxy lib/types/api-proxy.js, composeAgent).
- *
- * The child must run under the same composition the seeded history was produced
- * with — otherwise the tool schemas and prompt sections the model sees change,
- * and composing nothing would leave the child with no tools at all. The preset
- * id is resolved BEFORE the session exists (the session boundary snapshots
- * `meta` into the header synchronously); the composition is actually mounted in
- * `setup`, where a failure rolls the whole creation back.
- *
- * Note klip's child id and seed length differ from the host fork by design: the
- * id is klip-generated and `seedLength` covers only the cut turn ranges.
- */
-function composeChild(source: Session, ctx: Context): {
-  meta: Record<string, string>
-  setup: ((agentCtx: Context) => Promise<void>) | undefined
-} {
-  const presets = ctx.get('agentPresets') as {
-    resolve(presetId: string): Promise<{ id: string }>
-    mount(agentCtx: Context, presetId: string): Promise<void>
-  } | undefined
-  // Resolve from the log, not the header alone, mirroring api-proxy: a session
-  // that switched preset while blank ran its turns under the newer composition.
-  const presetId = resolveSessionPreset(source)
-  if (presets === undefined || presetId === undefined) {
-    return { meta: {}, setup: undefined }
-  }
-  return {
-    meta: { agentPreset: presetId },
-    setup: async (agentCtx) => {
-      // Mirror api-proxy's installSelection: couple a session-local model
-      // selection derived from the logged request header (falling back to the
-      // runtime default when the child has not issued a request yet).
-      const agent = (agentCtx as unknown as { agent?: { session: Session } }).agent
-      let picked: ModelSelection | undefined
-      const selection = {
-        get current(): ModelSelection | undefined {
-          if (picked !== undefined) return picked
-          const config = agent?.session.requestHeader()?.config
-          if (config === undefined) return undefined
-          return {
-            provider: config.provider,
-            model: config.model,
-            ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
-          }
-        },
-        set current(next: ModelSelection | undefined) { picked = next },
-        // Populated by installModelSelection's prompt-assembly listener.
-        assembled: undefined as ModelSelection | undefined,
-      }
-      installModelSelection(agentCtx, selection)
-      await presets.mount(agentCtx, presetId)
-    },
-  }
-}
-
 async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise<CommandResult> {
   const source = invocation.agent.session
   const events = source.events
@@ -156,3 +99,59 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
   return { kind: 'success', text: `Created new session ${childId} with ${intervals.length} interval(s).` }
 }
 
+/**
+ * Compose the child session from the source's agent preset, mirroring the host
+ * API proxy's `fork` RPC (dsh-host-apiproxy lib/types/api-proxy.js, composeAgent).
+ *
+ * The child must run under the same composition the seeded history was produced
+ * with — otherwise the tool schemas and prompt sections the model sees change,
+ * and composing nothing would leave the child with no tools at all. The preset
+ * id is resolved BEFORE the session exists (the session boundary snapshots
+ * `meta` into the header synchronously); the composition is actually mounted in
+ * `setup`, where a failure rolls the whole creation back.
+ *
+ * Note klip's child id and seed length differ from the host fork by design: the
+ * id is klip-generated and `seedLength` covers only the cut turn ranges.
+ */
+function composeChild(source: Session, ctx: Context): {
+  meta: Record<string, string>
+  setup: ((agentCtx: Context) => Promise<void>) | undefined
+} {
+  const presets = ctx.get('agentPresets') as {
+    resolve(presetId: string): Promise<{ id: string }>
+    mount(agentCtx: Context, presetId: string): Promise<void>
+  } | undefined
+  // Resolve from the log, not the header alone, mirroring api-proxy: a session
+  // that switched preset while blank ran its turns under the newer composition.
+  const presetId = resolveSessionPreset(source)
+  if (presets === undefined || presetId === undefined) {
+    return { meta: {}, setup: undefined }
+  }
+  return {
+    meta: { agentPreset: presetId },
+    setup: async (agentCtx) => {
+      // Mirror api-proxy's installSelection: couple a session-local model
+      // selection derived from the logged request header (falling back to the
+      // runtime default when the child has not issued a request yet).
+      const agent = (agentCtx as unknown as { agent?: { session: Session } }).agent
+      let picked: ModelSelection | undefined
+      const selection = {
+        get current(): ModelSelection | undefined {
+          if (picked !== undefined) return picked
+          const config = agent?.session.requestHeader()?.config
+          if (config === undefined) return undefined
+          return {
+            provider: config.provider,
+            model: config.model,
+            ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort }),
+          }
+        },
+        set current(next: ModelSelection | undefined) { picked = next },
+        // Populated by installModelSelection's prompt-assembly listener.
+        assembled: undefined as ModelSelection | undefined,
+      }
+      installModelSelection(agentCtx, selection)
+      await presets.mount(agentCtx, presetId)
+    },
+  }
+}
