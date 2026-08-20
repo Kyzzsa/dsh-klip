@@ -1,6 +1,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionTitleService } from '@deepseek-ai/dsh-session-title'
 import '@deepseek-ai/dsh-workspace'
 import { KInterval } from './k-interval.ts'
 import { reIndexEvents } from './re-index.ts'
@@ -69,6 +70,16 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
       },
       agentOptions,
     })
+
+    // Title the new session "KLIP <source title>" so it is easy to tell apart
+    // from the source. The title service is optional: when the profile lacks it
+    // (or the source has no title yet) the child keeps its auto-generated title.
+    const titleService: SessionTitleService | undefined = ctx.get('sessionTitle')
+    if (titleService !== undefined) {
+      const sourceTitle = titleService.get(source)?.title
+      if (sourceTitle !== undefined) titleService.rename(child.agent.session, `KLIP ${sourceTitle}`)
+    }
+
     await ctx.sessions.flush(child.agent.session)
 
     // Attach the new session to the source session's workspace; skip when the

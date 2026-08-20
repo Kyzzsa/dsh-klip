@@ -23,6 +23,27 @@ npx -p @deepseek-ai/dsh dsh plugin --profile <profile> add /path/to/dsh-klip
 - **Re-indexes automatically.** Selected `turn`s become a dense `1..N` and `SessionEvent.seq` becomes contiguous from `0`, so the new session is immediately usable.
 - **Drops dead references, and anything that points at them.** A reference to a cut-away event drops that event — and any event referencing *that* dropped event is dropped too, cascading down the chain until nothing points at a deleted event.
 - **Customizable rules.** The re-indexing is rule-driven (`src/rules.ts`): add rules for third-party event types, rebuild, restart — no engine changes.
+- **Auto-titled `KLIP <source title>`.** The new session is named so you can tell it apart from the source at a glance.
+
+## Customizing rules
+
+The re-indexing is driven by two tables in `src/rules.ts` (`turnRules` remaps `turn`, `seqRules` remaps `seq` and translates references). Add a rule for an event type to adapt a third-party plugin without touching the engine:
+
+```ts
+// src/rules.ts
+export const seqRules: ReIndexRules = {
+  '*': [{ kind: 'value', path: 'seq' }],
+  // ...existing user/message, tool/result, ... entries...
+  'my/plugin/event': [{ kind: 'value', path: 'data.parentSeq' }], // new
+}
+```
+
+Rebuild (`npm run build`) and restart the profile. Each event type can declare three reference-rule shapes:
+
+- **`value`** — a single numeric reference (e.g. `seq`, `data.turn`): target not in the map → the event is dropped.
+- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`): dead members are filtered out; the event drops only when all are dead.
+- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`): intersected with the surviving seq set; dropped only when the intersection is empty.
+- **`override: true`** — fully takes over that type, skipping the `*` wildcard (only meaningful on a concrete type).
 
 ## How it works — read on only if you care
 

@@ -23,6 +23,27 @@ npx -p @deepseek-ai/dsh dsh plugin --profile <profile> add /path/to/dsh-klip
 - **自动重排。** 选中的 `turn` 被重排为稠密的 `1..N`,`SessionEvent.seq` 被重写为从 `0` 连续递增,新会话开箱即用。
 - **删除失效引用,并连它一起删。** 任何指向被裁事件的引用都会删除该事件——而**指向这个被删事件**的引用也会被一并删除,逐级向下级联,直到没有任何东西再指向被删事件为止。
 - **规则可自定义。** 重排由规则表驱动(`src/rules.ts`):为第三方事件类型追加规则,rebuild、重启即可,无需改动引擎。
+- **新会话自动命名 `KLIP <原标题>`**,一眼就能和源会话区分开。
+
+## 自定义规则
+
+重排由 `src/rules.ts` 里的两张表驱动(`turnRules` 重映射 turn、`seqRules` 重映射 seq 并翻译引用)。给某个事件类型加一条规则即可适配第三方插件,不用碰引擎:
+
+```ts
+// src/rules.ts
+export const seqRules: ReIndexRules = {
+  '*': [{ kind: 'value', path: 'seq' }],
+  // ...已有的 user/message、tool/result 等条目...
+  'my/plugin/event': [{ kind: 'value', path: 'data.parentSeq' }], // 新增
+}
+```
+
+改完 `npm run build` 并重启 profile 生效。每种事件类型可声明三类引用规则:
+
+- **`value`** — 单个数值引用(如 `seq`、`data.turn`):目标不在映射里 → 删除该事件。
+- **`array`** — 数值数组引用(如 `sourceEventSeqs`):过滤掉失效成员,仅当全部失效才删除。
+- **`interval`** — 闭区间引用(如 `surfaceOp.start` / `surfaceOp.end`):与幸存的 seq 集合求交,交集为空才删除。
+- **`override: true`** — 让该类型完全接管,跳过通配符 `*` 规则(仅对具体类型有效)。
 
 ## 工作原理(有兴趣再看)
 
