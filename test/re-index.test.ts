@@ -253,3 +253,36 @@ test('reIndexEvents: seqRules override flag skips the wildcard seq rule', () => 
   // data.customSeq missing → value skips; wildcard 'seq' overridden → own seq stays 1
   assert.equal(evt.seq, 1)
 })
+
+// ---- post-turn tool-call cut-off ----
+//
+// Tool calls are produced AFTER the completed turn's turn/end. Those events are
+// still attributed to the last turn (the loop cursor never reset), so without
+// the scan cut-off they would leak into the reindexed seed. The following tests
+// pin down that anything after the last completed turn/end is cut.
+
+test('reIndexEvents: post-turn tool-call events after the last turn/end are cut', () => {
+  const log: SessionEvent[] = [
+    turnStart(1, 0), assistantMsg(1, 1), turnEnd(1, 2),
+    // produced after turn 1 closed, still tagged with turn 1
+    ev(3, 'tool/call', { turn: 1, callId: 'c1' }),
+    ev(4, 'tool/result', { turn: 1, callId: 'c1' }),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
+  // only turn 1's three events survive; the tool-call aftermath is dropped
+  assert.equal(out.length, 3)
+  assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end'])
+})
+
+test('reIndexEvents: no-turn events after the last turn/end are cut (not treated as headers)', () => {
+  // header events before the first turn/start carry no turn and are kept; the
+  // same events AFTER the last turn/end must NOT be kept.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), assistantMsg(1, 1), turnEnd(1, 2),
+    ev(3, 'permission/preset', {}),
+    ev(4, 'sandbox/mode', {}),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
+  assert.equal(out.length, 3)
+  assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end'])
+})
