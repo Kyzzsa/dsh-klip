@@ -1,0 +1,168 @@
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import dlv from 'dlv'
+import { dset } from 'dset'
+import { KInterval } from './k-interval.ts'
+
+// Node 22 provides structuredClone, but the project lib has no DOM/@types/node
+// types, so it is declared here.
+declare const structuredClone: <T>(value: T) => T
+
+// Session-event re-indexing: extract the selected turn ranges and renumber them
+// into a fresh seed.
+//
+// The rule table (ReIndexRules) declares, per event type (or '*'), the reference
+// fields each rule handles. Every field is one of three shapes with a uniform
+// semantic: a missing/mistyped field → skipped (the rule does not apply to the
+// event, the wildcard no-ops), the event is kept; a present-but-fully-dead value
+// → the event is dropped:
+//   - value   : a single numeric reference. Not in the map → drop.
+//   - array   : a numeric array reference. All members dead → drop; some dead → filter.
+//   - interval: a closed [start,end]. No overlap with the surviving set → drop;
+//               overlapping → re-project both ends.
+// `override` is meaningful only on a concrete-type rule: when a type has any
+// override rule, the wildcard is skipped entirely and only its own rules apply
+// (that type is fully taken over). `override` on a wildcard rule is meaningless
+// and ignored.
+//
+// Two maps drive the renumbering:
+//   - turnMap: oldTurn → newTurn (1..N), covering only the selected turns.
+//   - seqMap : oldSeq → newSeq (0..N-1), filled in a single forward scan.
+//              Because references point only at earlier seqs, a reference's
+//              target is already in the map by the time the event is processed.
+
+type ReIndexRule =
+  | { kind: 'value'; path: string; override?: true }                    // single numeric reference
+  | { kind: 'array'; path: string; override?: true }                    // numeric array reference
+  | { kind: 'interval'; startPath: string; endPath: string; override?: true }  // closed interval reference
+
+type ReIndexRules = Readonly<Record<string, readonly ReIndexRule[]>>
+
+export type { ReIndexRule, ReIndexRules }
+
+// The default rule tables live in ./rules.ts, a standalone module users can
+// edit to adapt klip to third-party event types without touching the
+// re-indexing engine.
+
+// Extract the KInterval-selected turns from the session event log and renumber
+// them into a seed that agents.create accepts.
+// - seq is rewritten to be contiguous from 0 (via seqRules, incl. reference translation).
+// - turn is rewritten to a dense 1..N (via turnRules).
+// - step restarts at 1 each turn; no rewrite needed.
+// - Events whose references are all dead (value/array/interval) are dropped.
+// - Reference invalidation propagates.
+// Pure: does not mutate its arguments. It deep-copies events internally because
+// Session events and their data are frozen immutable objects, and renumbering
+// needs writable copies.
+// @param rules - the rule set. The caller must pass { turnRules, seqRules }
+//                explicitly so it can be injected from config; the defaults
+//                live in ./rules.ts.
+export function reIndexEvents(
+  events: readonly SessionEvent[],
+  kInterval: KInterval,
+  rules: { turnRules: ReIndexRules; seqRules: ReIndexRules },
+): SessionEvent[] {
+  // Count only completed turns (turn/end); an in-progress turn is not counted,
+  // so the KInterval cannot select it.
+  const turnCount = events.findLast(e => e.type === 'turn/end')?.data.turn ?? 0
+  const intervals = kInterval.instantiate(turnCount)
+
+  const turnMap = new Map<number, number>()
+  let newTurn = 1
+  for (const interval of intervals) {
+    for (let oldTurn = interval.s; oldTurn <= interval.e; oldTurn++) {
+      turnMap.set(oldTurn, newTurn++)
+    }
+  }
+
+  const seqMap = new Map<number, number>()
+  const reIndexedEvents: SessionEvent[] = []
+  let turn = 0 // turns are 1-based; 0 means "before the first turn", so these header events are kept unconditionally
+  let newSeq = 0
+
+  for (const event of events) {
+    if (event.type === 'turn/start') turn = event.data.turn
+    if (turn !== 0 && !turnMap.has(turn)) continue
+
+    seqMap.set(event.seq, newSeq)
+    const reIndexed = structuredClone(event)
+    if (applyRules(reIndexed, rules.seqRules, seqMap) && applyRules(reIndexed, rules.turnRules, turnMap)) {
+      reIndexedEvents.push(reIndexed)
+      newSeq++
+    } else {
+      seqMap.delete(event.seq)
+    }
+  }
+
+  return reIndexedEvents
+}
+
+function applyRules(event: SessionEvent, rules: ReIndexRules, map: Map<number, number>): boolean {
+  const specificRule = rules[event.type] ?? []
+  const hasOverride = specificRule.some(rule => rule.override === true)
+  const rulesToApply = hasOverride ? specificRule : [...(rules['*'] ?? []), ...specificRule]
+  for (const rule of rulesToApply) {
+    let ok: boolean
+    if (rule.kind === 'value') {
+      ok = applyValue(event, rule.path, map)
+    } else if (rule.kind === 'array') {
+      ok = applyArray(event, rule.path, map)
+    } else {
+      ok = applyInterval(event, rule.startPath, rule.endPath, map)
+    }
+    if (!ok) return false
+  }
+  return true
+}
+
+function applyValue(event: SessionEvent, path: string, map: Map<number, number>): boolean {
+  const ref = dlv(event, path)
+  if (typeof ref !== 'number') return true
+  const mapped = map.get(ref)
+  if (mapped === undefined) return false
+  dset(event, path, mapped)
+  return true
+}
+
+function applyArray(event: SessionEvent, path: string, map: Map<number, number>): boolean {
+  const ref = dlv(event, path)
+  if (!Array.isArray(ref)) return true
+  const mapped = ref.map(v => map.get(v)).filter((v): v is number => v !== undefined)
+  if (mapped.length === 0) return false
+  dset(event, path, mapped)
+  return true
+}
+
+function applyInterval(
+  event: SessionEvent,
+  startPath: string,
+  endPath: string,
+  map: Map<number, number>,
+): boolean {
+  const start = dlv(event, startPath)
+  const end = dlv(event, endPath)
+  if (typeof start !== 'number' || typeof end !== 'number') return true
+
+  let firstOverlapped: number | undefined
+  for (let i = start; i <= end; i++) {
+    const m = map.get(i)
+    if (m !== undefined) {
+      firstOverlapped = m
+      break
+    }
+  }
+
+  let lastOverlapped: number | undefined
+  for (let i = end; i >= start; i--) {
+    const m = map.get(i)
+    if (m !== undefined) {
+      lastOverlapped = m
+      break
+    }
+  }
+
+  if (firstOverlapped === undefined || lastOverlapped === undefined) return false
+
+  dset(event, startPath, firstOverlapped)
+  dset(event, endPath, lastOverlapped)
+  return true
+}

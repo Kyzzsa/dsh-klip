@@ -1,0 +1,8 @@
+# dsh-klip bundle layer. This whole file is a top-level patch array; the
+# loader inserts each row into the composition config tree by stable id.
+#
+# 'id' is the stable row identity; 'name' is the Node-resolvable package name.
+# The host half registers the /klip command; there is no client/GUI half.
+- insert:
+    - id: dsh-klip
+      name: dsh-klip

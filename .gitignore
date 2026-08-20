@@ -1,0 +1,11 @@
+# Dependencies
+node_modules
+
+# Build output
+lib/
+
+# Local npm cache (mirrored from the parent workspace)
+.npm-cache/
+
+# TypeScript build info
+*.tsbuildinfo
