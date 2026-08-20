@@ -7,37 +7,7 @@ import { KInterval } from './k-interval.ts'
 // types, so it is declared here.
 declare const structuredClone: <T>(value: T) => T
 
-// Session-event re-indexing: extract the selected turn ranges and renumber them
-// into a fresh seed.
-//
-// The rule table (ReIndexRules) declares, per event type (or '*'), the reference
-// fields each rule handles. Every field is one of three shapes with a uniform
-// semantic: a missing/mistyped field → skipped (the rule does not apply to the
-// event, the wildcard no-ops), the event is kept; a present-but-fully-dead value
-// → the event is dropped:
-//   - value   : a single numeric reference. Not in the map → drop.
-//   - array   : a numeric array reference. All members dead → drop; some dead → filter.
-//   - interval: a closed [start,end]. No overlap with the surviving set → drop;
-//               overlapping → re-project both ends.
-// `override` is meaningful only on a concrete-type rule: when a type has any
-// override rule, the wildcard is skipped entirely and only its own rules apply
-// (that type is fully taken over). `override` on a wildcard rule is meaningless
-// and ignored.
-//
-// Two maps drive the renumbering:
-//   - turnMap: oldTurn → newTurn (1..N), covering only the selected turns.
-//   - seqMap : oldSeq → newSeq (0..N-1), filled in a single forward scan.
-//              Because references point only at earlier seqs, a reference's
-//              target is already in the map by the time the event is processed.
-
-type ReIndexRule =
-  | { kind: 'value'; path: string; override?: true }                    // single numeric reference
-  | { kind: 'array'; path: string; override?: true }                    // numeric array reference
-  | { kind: 'interval'; startPath: string; endPath: string; override?: true }  // closed interval reference
-
-type ReIndexRules = Readonly<Record<string, readonly ReIndexRule[]>>
-
-export type { ReIndexRule, ReIndexRules }
+import type { ReIndexRules } from './rules.ts'
 
 // The default rule tables live in ./rules.ts, a standalone module users can
 // edit to adapt klip to third-party event types without touching the
@@ -81,7 +51,7 @@ export function reIndexEvents(
 
   for (const event of events) {
     if (event.type === 'turn/start') turn = event.data.turn
-    if (turn !== 0 && !turnMap.has(turn)) continue
+    if (!(turn === 0 || turnMap.has(turn))) continue
 
     seqMap.set(event.seq, newSeq)
     const reIndexed = structuredClone(event)
