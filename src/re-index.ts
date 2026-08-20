@@ -38,6 +38,7 @@ export function reIndexEvents(
   const lastTurnEnd = events.findLast(e => e.type === 'turn/end')
   if (lastTurnEnd === undefined) return []
   const turnCount = lastTurnEnd.data.turn
+
   const intervals = kInterval.instantiate(turnCount)
 
   const turnMap = new Map<number, number>()
@@ -66,11 +67,7 @@ export function reIndexEvents(
       seqMap.delete(event.seq)
     }
 
-    // Stop at the last completed turn's end: everything after it belongs to the
-    // open turn /klip runs in, which the KInterval can never select. Placed
-    // after the emit so a selected final turn keeps its closing turn/end.
-    // Matching by the last turn/end's seq (not the turn number) is intentional:
-    // a turn may carry an earlier turn/end while more of its events follow.
+    // Stop at the last completed turn's end
     if (event.seq === lastTurnEnd.seq) break
   }
 
