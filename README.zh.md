@@ -11,13 +11,6 @@
 
 用极简的 **KInterval** 语法(1 基 turn 号)圈定范围,klip 会把选区重排成一条新会话、自动挂回你所在的 workspace,完事——不用再做任何手工配置。
 
-## 安装
-
-```sh
-npx -p @deepseek-ai/dsh dsh plugin --profile <profile> add /path/to/dsh-klip
-# 然后重启该 profile
-```
-
 ## 它能帮你做什么
 
 - **自动重排。** 选中的 `turn` 被重排为稠密的 `1..N`,`SessionEvent.seq` 被重写为从 `0` 连续递增,新会话开箱即用。

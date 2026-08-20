@@ -11,13 +11,6 @@ A single `/klip` command cuts turn ranges out of a conversation and merges them 
 
 Pick ranges with the tiny **KInterval** syntax (1-based turns). klip re-indexes the selection into a fresh session and hooks it back into your workspace — no manual steps, nothing else to configure.
 
-## Install
-
-```sh
-npx -p @deepseek-ai/dsh dsh plugin --profile <profile> add /path/to/dsh-klip
-# then restart that profile
-```
-
 ## What it does for you
 
 - **Re-indexes automatically.** Selected `turn`s become a dense `1..N` and `SessionEvent.seq` becomes contiguous from `0`, so the new session is immediately usable.
