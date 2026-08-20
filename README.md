@@ -1,6 +1,6 @@
 # dsh-klip
 
-Cut the parts of a conversation you want and merge them into a brand-new session.
+A plugin that cuts selected turn ranges out of a conversation and merges them into a new session.
 
 > [简体中文](./README.zh.md)
 
@@ -9,18 +9,18 @@ Cut the parts of a conversation you want and merge them into a brand-new session
 /klip -5.., not -3  # the last 5 turns, minus turn 3
 ```
 
-Pick your ranges with the small **KInterval** syntax (1-based turn numbers), and klip re-indexes the selection into a fresh session that's automatically hooked back into your current workspace — no manual steps, nothing else to configure.
+Specify ranges with the KInterval syntax (turn numbers start at 1). klip re-indexes the selected events into a new session and attaches it to the current workspace.
 
-## What it does for you
+## Features
 
-- **Re-indexes automatically.** Selected `turn`s become a dense `1..N` and `SessionEvent.seq` runs contiguously from `0`, so the new session is immediately usable, with no gaps left behind.
-- **Cascades dangling-reference cleanup.** When an event references a cut-away event, that event is dropped too — and if another event references *that* dropped one, it drops as well, cascading outward until nothing points at a deleted event.
-- **Rules are extensible.** Re-indexing is rule-driven (`src/rules.ts`). To adapt a third-party plugin's event types, add a rule — no engine changes needed.
-- **Auto-titles the new session `KLIP <source title>`** so you can tell it apart from the source at a glance.
+- **Automatic re-indexing.** Selected turns are renumbered to a contiguous `1..N` and `SessionEvent.seq` is reset to start from 0, so the new session is usable immediately.
+- **Dangling reference cleanup.** When an event references a cut-away event, it is dropped as well. The cleanup cascades until nothing references a deleted event.
+- **Customizable rules.** Re-indexing is driven by the rule tables in `src/rules.ts`. To support a third-party event type, add a rule; no engine changes are needed.
+- **Automatic naming.** New sessions are named `KLIP <source title>` to distinguish them from the source.
 
 ## Customizing rules
 
-Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn`, and `seqRules` remaps `seq` and translates inter-event references. To adapt a third-party event type, add a single rule without touching the engine:
+Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn` values, and `seqRules` remaps `seq` and translates references between events. To support a third-party event type, add a rule:
 
 ```ts
 // src/rules.ts
@@ -31,19 +31,21 @@ export const seqRules: ReIndexRules = {
 }
 ```
 
-Rebuild (`npm run build`) and restart the profile to apply. Each event type can declare three reference-rule shapes:
+Rebuild (`npm run build`) and restart the profile to apply. Each event type supports three reference-rule shapes:
 
-- **`value`** — a single numeric reference (e.g. `seq`, `data.turn`): if the target isn't in the result, the event is dropped.
-- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`): dead members are filtered out; the event drops only when all members are dead.
-- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`): intersected with the surviving seq set; dropped only when the intersection is empty.
-- **`override: true`** — lets the type fully take over its rule, skipping the `*` wildcard (only meaningful on a concrete type).
+- **`value`** — a single numeric reference (e.g. `seq`, `data.turn`). The event is dropped if the target is not in the result.
+- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`). Dead members are filtered out; the event is dropped only when all members are dead.
+- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`). It is intersected with the surviving seq set; the event is dropped only when the intersection is empty.
+- **`override: true`** — the type fully takes over its rule and skips the `*` wildcard. Only meaningful on a concrete type.
 
-## How it works — read on only if you care
+## How it works
 
-- **KInterval** (`src/k-interval.ts`) parses the range text into include/exclude intervals.
-- **reIndexEvents** (`src/re-index.ts`) extracts the selection and rewrites it into a valid session seed: contiguous `seq`, dense `turn`, every intra-event reference remapped.
-- Only **completed** turns are cut; header events (no `turn` field, before the first turn) are always kept.
-- The new session is created through the agent factory (so it persists and opens in the UI), flushed, then attached to the source workspace.
+`KInterval` (`src/k-interval.ts`) parses the range text into include/exclude intervals. `reIndexEvents` (`src/re-index.ts`) takes the selected events, renumbers them (`seq` contiguous, `turn` dense), and remaps all references, producing a valid session seed.
+
+Notes:
+
+- Only **completed** turns are cut. Header events (those without a `turn` field, before the first turn) are always kept.
+- The new session is created through the agent factory, so it persists and opens in the UI. It is flushed to disk and then attached to the source workspace.
 
 ## Project layout
 
