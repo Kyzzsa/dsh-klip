@@ -34,8 +34,10 @@ export function reIndexEvents(
   // Count only completed turns (turn/end); an in-progress turn is not counted,
   // so the KInterval cannot select it. The last completed turn's end is also
   // the scan cut-off: everything after it is the open turn klip is running in.
+  // With no completed turn there is nothing to select, so bail out early.
   const lastTurnEnd = events.findLast(e => e.type === 'turn/end')
-  const turnCount = lastTurnEnd?.data.turn ?? 0
+  if (lastTurnEnd === undefined) return []
+  const turnCount = lastTurnEnd.data.turn
   const intervals = kInterval.instantiate(turnCount)
 
   const turnMap = new Map<number, number>()
@@ -69,7 +71,7 @@ export function reIndexEvents(
     // after the emit so a selected final turn keeps its closing turn/end.
     // Matching by the last turn/end's seq (not the turn number) is intentional:
     // a turn may carry an earlier turn/end while more of its events follow.
-    if (event.seq === lastTurnEnd?.seq) break
+    if (event.seq === lastTurnEnd.seq) break
   }
 
   return reIndexedEvents

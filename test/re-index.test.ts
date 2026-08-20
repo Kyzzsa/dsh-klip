@@ -286,3 +286,13 @@ test('reIndexEvents: no-turn events after the last turn/end are cut (not treated
   assert.equal(out.length, 3)
   assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end'])
 })
+
+test('reIndexEvents: no completed turn/end yields an empty seed (early return)', () => {
+  // only an in-progress turn exists (no turn/end) → nothing is selectable
+  const log: SessionEvent[] = [
+    ev(0, 'permission/preset', {}),
+    turnStart(1, 1), assistantMsg(1, 2),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
+  assert.equal(out.length, 0)
+})
