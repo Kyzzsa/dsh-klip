@@ -9,13 +9,12 @@ import { KInterval } from './k-interval.ts'
 import { reIndexEvents } from './re-index.ts'
 import { turnRules, seqRules } from './rules.ts'
 
-// Host plugin for the /klip command: extract KInterval turn ranges from the
+// Host plugin for the /klip command: cut KInterval turn ranges out of the
 // current session and merge them into a new session.
 export const name = 'dsh-klip'
 
 export const inject = ['commands', 'agents', 'sessions', 'workspaceRegistry', 'agentPresets']
 
-// Register the global /klip command.
 export function apply(ctx: Context): void {
   ctx.commands.register({
     name: 'klip',
@@ -46,8 +45,7 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
   }
   if (intervals.length === 0) return { kind: 'error', text: 'No intervals matched any turn.' }
 
-  // Extract the selected ranges and re-index them into a seed: seq contiguous
-  // from 0, turn dense from 1..N. reIndexEvents is pure and deep-copies internally.
+  // reIndexEvents is pure; it deep-copies internally.
   let seed: SessionEvent[]
   try {
     seed = reIndexEvents(events, kInterval, { turnRules, seqRules })
@@ -77,9 +75,8 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
       setup: composition.setup,
     })
 
-    // Title the new session "KLIP <source title>" so it is easy to tell apart
-    // from the source. Both the title service and the source's title are
-    // optional; when either is absent the child keeps its auto-generated title.
+    // Name the child "KLIP <source title>"; both the service and the source
+    // title are optional, so absent ones fall back to the auto-generated title.
     const titleService = ctx.get('sessionTitle')
     const sourceTitle = titleService?.get(source)?.title
     if (sourceTitle !== undefined) {
@@ -88,8 +85,7 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
 
     await ctx.sessions.flush(child.agent.session)
 
-    // Attach the new session to the source session's workspace; skip when the
-    // source belongs to no workspace (it stays ungrouped).
+    // Attach to the source's workspace, if any.
     const workspace = ctx.workspaceRegistry.list().find(w => w.sessionIds.includes(source.id))
     if (workspace !== undefined) await workspace.attachSession(SessionId(childId))
   } catch (error) {
@@ -99,20 +95,13 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
   return { kind: 'success', text: `Created new session ${childId} with ${intervals.length} interval(s).` }
 }
 
-/**
- * Compose the child session from the source's agent preset, mirroring the host
- * API proxy's `fork` RPC (dsh-host-apiproxy lib/types/api-proxy.js, composeAgent).
- *
- * The child must run under the same composition the seeded history was produced
- * with — otherwise the tool schemas and prompt sections the model sees change,
- * and composing nothing would leave the child with no tools at all. The preset
- * id is resolved BEFORE the session exists (the session boundary snapshots
- * `meta` into the header synchronously); the composition is actually mounted in
- * `setup`, where a failure rolls the whole creation back.
- *
- * Note klip's child id and seed length differ from the host fork by design: the
- * id is klip-generated and `seedLength` covers only the cut turn ranges.
- */
+// Compose the child from the source's agent preset, mirroring the host API
+// proxy's `fork` RPC (dsh-host-apiproxy lib/types/api-proxy.js, composeAgent):
+// the child must run under the same tool schemas and prompt sections the seeded
+// history was produced with. The preset id is resolved before the session
+// exists (meta is snapshotted into the header synchronously); the composition
+// mounts in `setup`, where a failure rolls the whole creation back. Klip's
+// child id and seed length differ from the host fork by design.
 function composeChild(source: Session, ctx: Context): {
   meta: Record<string, string>
   setup: ((agentCtx: Context) => Promise<void>) | undefined
@@ -121,8 +110,8 @@ function composeChild(source: Session, ctx: Context): {
     resolve(presetId: string): Promise<{ id: string }>
     mount(agentCtx: Context, presetId: string): Promise<void>
   } | undefined
-  // Resolve from the log, not the header alone, mirroring api-proxy: a session
-  // that switched preset while blank ran its turns under the newer composition.
+  // Resolve from the log, not the header alone (a session that switched preset
+  // while blank ran its turns under the newer composition).
   const presetId = resolveSessionPreset(source)
   if (presets === undefined || presetId === undefined) {
     return { meta: {}, setup: undefined }
@@ -132,7 +121,7 @@ function composeChild(source: Session, ctx: Context): {
     setup: async (agentCtx) => {
       // Mirror api-proxy's installSelection: couple a session-local model
       // selection derived from the logged request header (falling back to the
-      // runtime default when the child has not issued a request yet).
+      // runtime default before the child issues its first request).
       const agent = (agentCtx as unknown as { agent?: { session: Session } }).agent
       let picked: ModelSelection | undefined
       const selection = {
