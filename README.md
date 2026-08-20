@@ -11,6 +11,33 @@ A plugin that cuts selected turn ranges out of a conversation and merges them in
 
 Specify ranges with the KInterval syntax (turn numbers start at 1). klip re-indexes the selected events into a new session and attaches it to the current workspace.
 
+## KInterval syntax
+
+A KInterval is a comma-separated list of clauses, each selecting turns by 1-based index. Negative numbers count from the end (`-1` is the last turn). All intervals are closed: both endpoints are included.
+
+| Form | Meaning |
+|------|---------|
+| `x` | turn `x` only |
+| `a..b` | turns `a` through `b` |
+| `a..` | turn `a` to the last |
+| `..b` | first turn through `b` |
+| `..` | all turns |
+| `not I` | exclude the interval `I` |
+
+Examples:
+
+```sh
+/klip 3           # just turn 3
+/klip 2..5        # turns 2, 3, 4, 5
+/klip 4..         # turn 4 to the last
+/klip ..3         # turns 1, 2, 3
+/klip ..          # all turns
+/klip .., not 2   # all turns except turn 2
+/klip -3..        # the last 3 turns
+```
+
+Whitespace is ignored, so `1..2` and `1 .. 2` are equivalent.
+
 ## Features
 
 - **Automatic re-indexing.** Selected turns are renumbered to a contiguous `1..N` and `SessionEvent.seq` is reset to start from 0, so the new session is usable immediately.
