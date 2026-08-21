@@ -2,7 +2,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import dlv from 'dlv'
 import { dset } from 'dset'
 import { KInterval } from './k-interval.ts'
-import type { ReIndexRules } from './rules.ts'
+import type { ReIndexRules, SeqReIndexRules } from './rules.ts'
 
 // Node 22 has structuredClone; declared here because the project has no
 // DOM/@types/node types.
@@ -17,10 +17,13 @@ declare const structuredClone: <T>(value: T) => T
 export function reIndexEvents(
   events: readonly SessionEvent[],
   kInterval: KInterval,
-  rules: { turnRules: ReIndexRules; seqRules: ReIndexRules },
+  rules: { turnRules: ReIndexRules; seqRules: SeqReIndexRules },
 ): SessionEvent[] {
-  // Only completed turns (turn/end) are selectable; that event is also the
-  // scan cut-off. No completed turn → nothing to select.
+  // Only completed turns (turn/end) are selectable; that event also fixes the
+  // turn count the KInterval is instantiated against. No completed turn →
+  // nothing to select. There is deliberately NO scan cut-off at this event:
+  // trailing records (tool calls, /compact summaries) still belong to their
+  // turn and are filtered purely by membership, so they are kept, not dropped.
   const lastTurnEnd = events.findLast(e => e.type === 'turn/end')
   if (lastTurnEnd === undefined) return []
   const turnCount = lastTurnEnd.data.turn
@@ -35,7 +38,14 @@ export function reIndexEvents(
     }
   }
 
+  // Two forward seq maps. `seqMap` covers every survivor; `surfaceSeqMap` only
+  // the surface nodes — types whose seqRules declare a surface-interval. A
+  // surface-interval re-projects onto the latter: the surface fold keeps only
+  // those in its node list, so landing on a non-surface survivor replays as
+  // "start seq N not found in surface".
   const seqMap = new Map<number, number>()
+  const surfaceSeqMap = new Map<number, number>()
+
   const reIndexedEvents: SessionEvent[] = []
   let turn = 0 // 0 = before the first turn → header events kept unconditionally
   let newSeq = 0
@@ -45,23 +55,33 @@ export function reIndexEvents(
     if (!(turn === 0 || turnMap.has(turn))) continue
 
     seqMap.set(event.seq, newSeq)
+    // A surface event is one whose seqRules declare a surface-interval; all its
+    // seq refs (own seq, sourceEventSeqs, surfaceOp range) are surface nodes, so
+    // the whole event resolves against surfaceSeqMap. Surface handling lives
+    // here, in the map choice; applyRules stays single-map.
+    const isSurface = (rules.seqRules[event.type] ?? []).some(rule => rule.kind === 'surface-interval')
+    if (isSurface) surfaceSeqMap.set(event.seq, newSeq)
 
     const reIndexed = structuredClone(event)
-    if (applyRules(reIndexed, rules.seqRules, seqMap) && applyRules(reIndexed, rules.turnRules, turnMap)) {
+
+    if (applyRules(reIndexed, rules.seqRules, isSurface ? surfaceSeqMap : seqMap)
+      && applyRules(reIndexed, rules.turnRules, turnMap)) {
       reIndexedEvents.push(reIndexed)
       newSeq++
     } else {
       seqMap.delete(event.seq)
+      surfaceSeqMap.delete(event.seq)
     }
-
-    // Stop at the last completed turn's end
-    if (event.seq === lastTurnEnd.seq) break
   }
 
   return reIndexedEvents
 }
 
-function applyRules(event: SessionEvent, rules: ReIndexRules, map: Map<number, number>): boolean {
+function applyRules(
+  event: SessionEvent,
+  rules: SeqReIndexRules,
+  map: Map<number, number>,
+): boolean {
   const specificRule = rules[event.type] ?? []
   const hasOverride = specificRule.some(rule => rule.override === true)
   const rulesToApply = hasOverride ? specificRule : [...(rules['*'] ?? []), ...specificRule]
@@ -72,6 +92,7 @@ function applyRules(event: SessionEvent, rules: ReIndexRules, map: Map<number, n
     } else if (rule.kind === 'array') {
       ok = applyArray(event, rule.path, map)
     } else {
+      // interval and surface-interval both project onto the caller's map.
       ok = applyInterval(event, rule.startPath, rule.endPath, map)
     }
     if (!ok) return false
@@ -101,6 +122,7 @@ function applyArray(event: SessionEvent, path: string, map: Map<number, number>)
   return true
 }
 
+// Re-project a closed [start,end] range onto surviving candidates in `map`.
 function applyInterval(
   event: SessionEvent,
   startPath: string,

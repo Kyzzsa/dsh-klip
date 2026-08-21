@@ -19,7 +19,7 @@ export function apply(ctx: Context): void {
   ctx.commands.register({
     name: 'klip',
     description: 'Extract the selected turn ranges into one new session',
-    input: { hint: '<KInterval> (1-based turns), e.g. 1..3,7' },
+    input: { hint: '<KInterval> (1-based turns), e.g. 1..3, -2.., not 2' },
     handler: (invocation) => executeKlip(ctx, invocation),
   })
 }
@@ -36,7 +36,7 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
   if (raw.length === 0) return { kind: 'error', text: 'Usage: /klip <KInterval>, e.g. /klip ..3, 5, 7.., -10..-5, not 2' }
 
   let kInterval: KInterval
-  let intervals: { s: number; e: number }[]
+  let intervals: { s: number; e: number }[] // for error test and display only
   try {
     kInterval = KInterval.from_string(raw)
     intervals = kInterval.instantiate(turnCount)
@@ -45,10 +45,17 @@ async function executeKlip(ctx: Context, invocation: CommandInvocation): Promise
   }
   if (intervals.length === 0) return { kind: 'error', text: 'No intervals matched any turn.' }
 
+  // Cut at klip's own command/run: it is appended before this handler runs but
+  // attributed to the last completed turn, while its matching `command/done`
+  // lands only in the source afterwards. So it and everything after it (other
+  // open-turn events) must not leak into the seed.
+  const ownRun = events.findLastIndex(e => e.type === 'command/run' && e.data.commandId === invocation.commandId)
+  const cutSource = ownRun === -1 ? events : events.slice(0, ownRun)
+
   // reIndexEvents is pure; it deep-copies internally.
   let seed: SessionEvent[]
   try {
-    seed = reIndexEvents(events, kInterval, { turnRules, seqRules })
+    seed = reIndexEvents(cutSource, kInterval, { turnRules, seqRules })
   } catch (error) {
     return { kind: 'error', text: `Failed to re-index events: ${String(error)}` }
   }

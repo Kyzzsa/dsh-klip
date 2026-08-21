@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { foldSurface } from '@deepseek-ai/dsh-session/surface'
 import { KInterval } from '../src/k-interval.ts'
 import { reIndexEvents } from '../src/re-index.ts'
 import { turnRules, seqRules } from '../src/rules.ts'
-import type { ReIndexRules } from '../src/re-index.ts'
+import type { ReIndexRules, SeqReIndexRules } from '../src/rules.ts'
 
 // ---- helpers that build synthetic events ----
 
@@ -27,6 +28,26 @@ function assistantMsg(turn: number, seq: number, opts: { sourceEventSeqs?: numbe
   if (opts.sourceEventSeqs !== undefined) (event as unknown as { sourceEventSeqs: number[] }).sourceEventSeqs = opts.sourceEventSeqs
   if (opts.surfaceOp !== undefined) (event as unknown as { surfaceOp: unknown }).surfaceOp = opts.surfaceOp
   return event
+}
+// A user/message surface event (message-producing, carries a surfaceOp marker).
+function userMsg(turn: number, seq: number, opts: { sourceEventSeqs?: number[]; surfaceOp?: unknown } = {}): SessionEvent {
+  const event = ev(seq, 'user/message', { turn, step: 1, message: {} })
+  if (opts.sourceEventSeqs !== undefined) (event as unknown as { sourceEventSeqs: number[] }).sourceEventSeqs = opts.sourceEventSeqs
+  if (opts.surfaceOp !== undefined) (event as unknown as { surfaceOp: unknown }).surfaceOp = opts.surfaceOp
+  else (event as unknown as { surfaceOp: unknown }).surfaceOp = 'append'
+  return event
+}
+// A tool/result surface event (message-producing, carries a surfaceOp marker).
+function toolResult(turn: number, seq: number, opts: { sourceEventSeqs?: number[]; surfaceOp?: unknown } = {}): SessionEvent {
+  const event = ev(seq, 'tool/result', { turn, step: 1, message: { role: 'tool', content: [] } })
+  if (opts.sourceEventSeqs !== undefined) (event as unknown as { sourceEventSeqs: number[] }).sourceEventSeqs = opts.sourceEventSeqs
+  if (opts.surfaceOp !== undefined) (event as unknown as { surfaceOp: unknown }).surfaceOp = opts.surfaceOp
+  else (event as unknown as { surfaceOp: unknown }).surfaceOp = 'append'
+  return event
+}
+// A non-surface tool/call record (not surface-eligible).
+function toolCall(turn: number, seq: number): SessionEvent {
+  return ev(seq, 'tool/call', { turn, step: 1, callId: `c${seq}` })
 }
 function commandDone(seq: number, sourceEventSeq?: number): SessionEvent {
   const event = ev(seq, 'command/done', { commandId: 'c', kind: 'success' })
@@ -115,11 +136,10 @@ test('reIndexEvents: array reference filters members when some survive', () => {
 
 test('reIndexEvents: interval rule intersects and re-projects replace start/end', () => {
   const log: SessionEvent[] = [
-    turnStart(1, 0), assistantMsg(1, 1), assistantMsg(1, 2), turnEnd(1, 3),
+    turnStart(1, 0), assistantMsg(1, 1, { surfaceOp: 'append' }), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
     turnStart(2, 4), turnEnd(2, 5),
   ]
-  // replace covers seq 1..3; only seq1,seq2 (turn1) plus seq3 (turnEnd) survive.
-  // the covered interval seq1..3 all survive.
+  // replace covers surface nodes seq 1..2 (seq3 is a turn boundary, not surface).
   const replaceMsg = assistantMsg(2, 6, {
     sourceEventSeqs: [1, 2, 3],
     surfaceOp: { op: 'replace', start: 1, end: 3 },
@@ -127,12 +147,12 @@ test('reIndexEvents: interval rule intersects and re-projects replace start/end'
   const full = [...log, replaceMsg, turnEnd(2, 7)]
   const out = reIndexEvents(full, KInterval.from_string('1,2'), { turnRules, seqRules })
 
-  const msg = out.find(e => e.type === 'assistant/message' && (e as unknown as { surfaceOp: unknown }).surfaceOp)!
+  const msg = out.find(e => (e as unknown as { surfaceOp?: unknown }).surfaceOp?.['op'] === 'replace')!
   const op = (msg as unknown as { surfaceOp: { op: 'replace'; start: number; end: number } }).surfaceOp
   assert.equal(op.op, 'replace')
-  // intersection: [1,3] survivors are seq1,2,3 (if all present) → start/end re-projected
-  assert.equal(typeof op.start, 'number')
-  assert.equal(typeof op.end, 'number')
+  // the interval re-projects onto the surviving surface nodes (seq1, seq2)
+  assert.equal(op.start, 1)
+  assert.equal(op.end, 2)
 })
 
 test('reIndexEvents: interval with empty intersection drops the replace event', () => {
@@ -218,7 +238,7 @@ test('reIndexEvents: array rule skips on non-array field, event kept', () => {
   const log: SessionEvent[] = [
     turnStart(1, 0), ev(1, 'custom/event', { refs: 5 }), turnEnd(1, 1),
   ]
-  const customSeq: ReIndexRules = {
+  const customSeq: SeqReIndexRules = {
     '*': [{ kind: 'value', path: 'seq' }],
     'custom/event': [{ kind: 'array', path: 'data.refs' }],
   }
@@ -243,7 +263,7 @@ test('reIndexEvents: seqRules override flag skips the wildcard seq rule', () => 
   const log: SessionEvent[] = [
     turnStart(1, 0), ev(1, 'custom/event', {}), turnEnd(1, 1),
   ]
-  const customSeq: ReIndexRules = {
+  const customSeq: SeqReIndexRules = {
     ...seqRules,
     'custom/event': [{ kind: 'value', path: 'data.customSeq', override: true }],
   }
@@ -254,14 +274,14 @@ test('reIndexEvents: seqRules override flag skips the wildcard seq rule', () => 
   assert.equal(evt.seq, 1)
 })
 
-// ---- post-turn tool-call cut-off ----
+// ---- no tail cut-off ----
 //
-// Tool calls are produced AFTER the completed turn's turn/end. Those events are
-// still attributed to the last turn (the loop cursor never reset), so without
-// the scan cut-off they would leak into the reindexed seed. The following tests
-// pin down that anything after the last completed turn/end is cut.
+// There is no special case that stops the scan at the last completed turn's
+// turn/end. Trailing records (tool calls, no-turn summaries, /compact output)
+// produced after that point are filtered purely by turn membership: anything
+// attributed to a selected turn survives, anything in an unselected turn drops.
 
-test('reIndexEvents: post-turn tool-call events after the last turn/end are cut', () => {
+test('reIndexEvents: trailing events after the last turn/end are kept when in a selected turn', () => {
   const log: SessionEvent[] = [
     turnStart(1, 0), assistantMsg(1, 1), turnEnd(1, 2),
     // produced after turn 1 closed, still tagged with turn 1
@@ -269,19 +289,29 @@ test('reIndexEvents: post-turn tool-call events after the last turn/end are cut'
     ev(4, 'tool/result', { turn: 1, callId: 'c1' }),
   ]
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
-  // only turn 1's three events survive; the tool-call aftermath is dropped
-  assert.equal(out.length, 3)
-  assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end'])
+  // no cut-off: the trailing tool-call records survive with turn 1
+  assert.equal(out.length, 5)
+  assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end', 'tool/call', 'tool/result'])
 })
 
-test('reIndexEvents: no-turn events after the last turn/end are cut (not treated as headers)', () => {
-  // header events before the first turn/start carry no turn and are kept; the
-  // same events AFTER the last turn/end must NOT be kept.
+test('reIndexEvents: no-turn trailing events are attributed to the last turn and kept', () => {
   const log: SessionEvent[] = [
     turnStart(1, 0), assistantMsg(1, 1), turnEnd(1, 2),
     ev(3, 'permission/preset', {}),
     ev(4, 'sandbox/mode', {}),
   ]
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
+  // the turn cursor still points at turn 1, so these no-turn records keep it and survive
+  assert.equal(out.length, 5)
+  assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end', 'permission/preset', 'sandbox/mode'])
+})
+
+test('reIndexEvents: events in an unselected in-progress turn after the last turn/end are dropped', () => {
+  const log: SessionEvent[] = [
+    turnStart(1, 0), assistantMsg(1, 1), turnEnd(1, 2),
+    turnStart(2, 3), assistantMsg(2, 4),
+  ]
+  // select only turn 1; the open turn 2 is not in turnMap, so it is dropped
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
   assert.equal(out.length, 3)
   assert.deepEqual(out.map(e => e.type), ['turn/start', 'assistant/message', 'turn/end'])
@@ -295,4 +325,68 @@ test('reIndexEvents: no completed turn/end yields an empty seed (early return)',
   ]
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
   assert.equal(out.length, 0)
+})
+
+// ---- surface-replay validity ----
+//
+// A kept surface replacement (a /compact checkpoint) must remain a valid
+// surface operation in the seed. Its `surfaceOp.start/end` re-project onto the
+// FIRST/LAST surviving surface-eligible event in the shadowed range — never a
+// non-surface survivor (e.g. a tool/call), because the surface fold keeps only
+// message-producing events in its node list. We assert the seed replays cleanly
+// through dsh-session's real `foldSurface`.
+
+test('reIndexEvents: surface replace re-projects onto surface survivors and replays (tool/call inside range)', () => {
+  // turn1's u/a are cut away; the compact in turn3 shadowed [1..7] which also
+  // contains turn2's tool/call (non-surface). The re-projected start must land
+  // on a surface survivor (turn2's tool/result), not on the tool/call.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
+    turnStart(2, 4), toolCall(2, 5), toolResult(2, 6), assistantMsg(2, 7, { surfaceOp: 'append' }), turnEnd(2, 8),
+    turnStart(3, 9),
+    userMsg(3, 10, { sourceEventSeqs: [1, 2, 6, 7], surfaceOp: { op: 'replace', start: 1, end: 7 } }),
+    turnEnd(3, 11),
+  ]
+  // select turns 2,3 → turn1 (and its u/a seqs 1,2) dropped; tool/call survives
+  const out = reIndexEvents(log, KInterval.from_string('2,3'), { turnRules, seqRules })
+  const replace = out.find(e => e.type === 'user/message' && (e as unknown as { surfaceOp: unknown }).surfaceOp)!
+  assert.ok(replace)
+  // start/end must point at surviving surface-eligible seqs, not the tool/call
+  const op = (replace as unknown as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp
+  const surfaceSeqs = out.map((e, i) => (['user/message', 'assistant/message', 'tool/result'].includes(e.type) ? i : -1)).filter(i => i >= 0)
+  assert.ok(surfaceSeqs.includes(op.start))
+  assert.ok(surfaceSeqs.includes(op.end))
+  // the real surface fold must replay the seed without throwing
+  assert.doesNotThrow(() => foldSurface(out))
+})
+
+test('reIndexEvents: surface replace with a fully-cut shadowed range is dropped', () => {
+  const log: SessionEvent[] = [
+    turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
+    turnStart(2, 4), userMsg(2, 5), assistantMsg(2, 6, { surfaceOp: 'append' }), turnEnd(2, 7),
+    turnStart(3, 8),
+    userMsg(3, 9, { sourceEventSeqs: [1, 2, 5, 6], surfaceOp: { op: 'replace', start: 1, end: 6 } }),
+    turnEnd(3, 10),
+  ]
+  // select only turn3 → every shadowed surface seq (all in turns 1,2) is dead
+  const out = reIndexEvents(log, KInterval.from_string('3'), { turnRules, seqRules })
+  assert.equal(out.filter(e => e.type === 'user/message').length, 0)
+  // no replace remains; the seed is just turn3's boundary + compact dropped
+  assert.doesNotThrow(() => foldSurface(out))
+})
+
+test('reIndexEvents: surface replace replay is valid when only a prefix of the shadowed range survives', () => {
+  // compact in turn3 shadowed [1..6] (turn1+turn2). Cut turn2 and turn3 (drop
+  // turn1 keeps seqs 1,2; turn2's seqs 5,6 dead). Re-projected range covers only
+  // the surviving surface nodes, and the seed must still fold.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
+    turnStart(2, 4), userMsg(2, 5), assistantMsg(2, 6, { surfaceOp: 'append' }), turnEnd(2, 7),
+    turnStart(3, 8),
+    userMsg(3, 9, { sourceEventSeqs: [1, 2, 5, 6], surfaceOp: { op: 'replace', start: 1, end: 6 } }),
+    turnEnd(3, 10),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1,3'), { turnRules, seqRules })
+  assert.ok(out.find(e => e.type === 'user/message'))
+  assert.doesNotThrow(() => foldSurface(out))
 })
