@@ -50,7 +50,9 @@ KInterval 是逗号分隔的子句,每段按 turn 编号(从 1 开始)选择;负
 重排由 `src/rules.ts` 的两张表驱动:`turnRules` 重映射 turn,`seqRules` 重映射 seq 并翻译事件间的引用。每种事件类型映射到一个**单元格** — 一个 `rules` 数组,外加两个可选的 presence 标志,作用于整类(设为 `true` 即开启,省略即 false,从不写 `false`):
 
 - **`override: true`** — 该类型的规则完全取代通配符 `*`(缺省表示在其基础上扩展)。
-- **`surface`**(仅 seq 表)— 该类型加入模型可见 surface,其引用只投影到 surface 节点(如 `surfaceOp`)。
+- **`surface`**(仅 seq 表)— 该类型加入模型可见 surface:即它是产出消息的节点,会被加入 surface-only seq map。但它的 `surfaceOp` 区间规则仍须在该规则内标 `surface: true`,才会投影到 surface 节点。
+
+`surface` 也出现在**区间规则**上(仅 seq 表):在该规则标 `surface: true`,表示这条引用的目标必须是 surface 节点(如 `surfaceOp.start` / `surfaceOp.end`)。普通引用(如 `sourceEventSeqs`,指向 `tool/call` 等普通记录)则不标,这样它们投影到**全部**幸存者。
 
 支持第三方事件类型就加一个单元格:
 
@@ -59,7 +61,10 @@ KInterval 是逗号分隔的子句,每段按 turn 编号(从 1 开始)选择;负
 export const seqRules: SeqReIndexRules = {
   '*': { rules: [{ kind: 'value', path: 'seq' }] },
   // ...已有的 user/message、tool/result 等条目...
-  'my/plugin/event': { rules: [{ kind: 'value', path: 'data.parentSeq' }] }, // 新增
+  'my/plugin/event': {
+    surface: true, // 加入 surface(可选)
+    rules: [{ kind: 'value', path: 'data.parentSeq' }], // 新增
+  },
 }
 ```
 

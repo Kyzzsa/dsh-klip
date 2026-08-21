@@ -50,7 +50,9 @@ Whitespace is ignored, so `1..2` and `1 .. 2` are equivalent.
 Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn` values, and `seqRules` remaps `seq` and translates references between events. Each event type maps to a **cell** — a `rules` array plus two optional presence flags that apply to the whole type (set one to `true` or omit it; absent means false):
 
 - **`override: true`** — the type's own rules fully replace the `*` wildcard (default: they extend it).
-- **`surface`** (seq table only) — the type joins the model-visible surface, so its references re-project onto surface nodes only (e.g. `surfaceOp`).
+- **`surface`** (seq table only) — the type joins the model-visible surface: it is a message-producing node, so it is added to the surface-only seq map. A surface event still needs its `surfaceOp` interval rule marked `surface: true` (rule level) to re-project onto surface nodes only.
+
+`surface` also appears **on an `interval` rule** (seq table only): setting `surface: true` there means that rule's reference must land on a surface node (e.g. `surfaceOp.start` / `surfaceOp.end`). Ordinary references like `sourceEventSeqs` — which point at plain records such as `tool/call` — leave it off so they re-project onto **all** survivors.
 
 To support a third-party event type, add a cell:
 
@@ -59,7 +61,10 @@ To support a third-party event type, add a cell:
 export const seqRules: SeqReIndexRules = {
   '*': { rules: [{ kind: 'value', path: 'seq' }] },
   // ...existing user/message, tool/result, ... entries...
-  'my/plugin/event': { rules: [{ kind: 'value', path: 'data.parentSeq' }] }, // new
+  'my/plugin/event': {
+    surface: true, // joins the surface (optional)
+    rules: [{ kind: 'value', path: 'data.parentSeq' }], // new
+  },
 }
 ```
 

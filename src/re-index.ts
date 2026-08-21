@@ -39,11 +39,13 @@ export function reIndexEvents(
   }
 
   // Two forward seq maps. `seqMap` covers every survivor; `surfaceSeqMap` only
-  // the surface nodes. Whether an event joins the surface is a property of its
-  // type (`seqRules[type].surface`), so a surface event's refs — including its
-  // surfaceOp range — all re-project onto surfaceSeqMap: the surface fold keeps
-  // only those in its node list, so landing on a non-surface survivor would
-  // replay as "start seq N not found in surface".
+  // the surface nodes (events whose type cell carries `surface: true`). A
+  // reference re-projects onto `seqMap` unless its OWN rule is marked
+  // `surface: true` (e.g. a surfaceOp range), which re-projects onto
+  // `surfaceSeqMap` — the surface fold keeps only message nodes, so landing on
+  // a non-surface survivor would replay as "start seq N not found in surface".
+  // Normal refs like `sourceEventSeqs` point at plain records (tool/call, chunks)
+  // and must use `seqMap` or they would be wrongly dropped.
   const seqMap = new Map<number, number>()
   const surfaceSeqMap = new Map<number, number>()
 
@@ -103,7 +105,7 @@ export function reIndexEvents(
       ? turnCell.rules
       : [...(rules.turnRules['*']?.rules ?? []), ...(turnCell?.rules ?? [])]
 
-    if (applyRules(reIndexed, seqRuleSet, isSurface ? surfaceSeqMap : seqMap)
+    if (applyRules(reIndexed, seqRuleSet, seqMap, surfaceSeqMap)
       && applyRules(reIndexed, turnRuleSet, turnMap)) {
       reIndexedEvents.push(reIndexed)
       newSeq++
@@ -120,6 +122,7 @@ function applyRules(
   event: SessionEvent,
   rules: readonly ReIndexRule[],
   map: Map<number, number>,
+  surfaceMap: Map<number, number> = map,
 ): boolean {
   for (const rule of rules) {
     if (rule.kind === 'value') {
@@ -127,7 +130,9 @@ function applyRules(
     } else if (rule.kind === 'array') {
       if (!applyArray(event, rule.path, map)) return false
     } else if (rule.kind === 'interval') {
-      if (!applyInterval(event, rule.startPath, rule.endPath, map)) return false
+      // An interval marked `surface: true` re-projects onto the surface-only
+      // map (e.g. a surfaceOp range); otherwise it uses the all-survivor map.
+      if (!applyInterval(event, rule.startPath, rule.endPath, rule.surface === true ? surfaceMap : map)) return false
     }
     // skip-n and skip-till carry no refs; the scan loop handles them.
   }

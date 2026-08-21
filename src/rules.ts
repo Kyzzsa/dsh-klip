@@ -18,26 +18,32 @@
 //     compaction (`compaction/start` → till `compaction/end`), records and the
 //     summarizing checkpoint together.
 //
-// The table is keyed per event type; each value is a CELL that carries how that
-// type is handled. Type-level flags (a sibling of the rule array, never a
-// per-rule flag):
+// `surface` appears at TWO levels (both presence flags, set to `true` or omit):
+//   - On the CELL (seq table only): whether the EVENT TYPE joins the model-visible
+//     surface — i.e. it is a message-producing node that gets added to the
+//     surface-only seq map. turnRules never needs it.
+//   - On an INTERVAL RULE (seq table only): whether that rule's refs must re-project
+//     onto surface nodes only (e.g. `surfaceOp.start/end`). A normal reference
+//     (e.g. `sourceEventSeqs` → a `tool/call`) leaves it off so it re-projects onto
+//     ALL survivors.
+//
+// Cell-level flags (a sibling of the rule array):
 //   - `override` : the type's own rules fully replace the wildcard; absent
 //     (not `true`) means they extend it.
-//   - `surface`  (seq table only) : the type joins the model-visible surface, so
-//     its refs re-project onto surface nodes only.
-// Both are presence flags: set to `true` to turn on, or omit — absent means
-// false. `false` is never written. turnRules never needs `surface`.
+//   - `surface`  : the type joins the surface (see above).
+// `false` is never written; absent means false.
 //
 // Maps driving the renumbering:
 //   - turnMap: oldTurn → newTurn (1..N), selected turns only.
 //   - seqMap : oldSeq → newSeq (0..N-1), filled in one forward scan; refs point
 //              only at earlier seqs, so targets are already in the map.
 
-// Base rule: turn fields and ordinary seq references. No surface, no override.
+// Base rule: turn fields and ordinary seq references. `surface` is allowed only
+// on an interval rule (seq table only); no override here.
 export type ReIndexRule =
   | { kind: 'value'; path: string }
   | { kind: 'array'; path: string }
-  | { kind: 'interval'; startPath: string; endPath: string }
+  | { kind: 'interval'; startPath: string; endPath: string; surface?: true }
   | { kind: 'skip-n'; n: number }
   | { kind: 'skip-till'; till: string }
 
@@ -66,21 +72,21 @@ export const seqRules: SeqReIndexRules = {
     surface: true,
     rules: [
       { kind: 'array', path: 'sourceEventSeqs' },
-      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end' },
+      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end', surface: true },
     ],
   },
   'assistant/message': {
     surface: true,
     rules: [
       { kind: 'array', path: 'sourceEventSeqs' },
-      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end' },
+      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end', surface: true },
     ],
   },
   'tool/result': {
     surface: true,
     rules: [
       { kind: 'array', path: 'sourceEventSeqs' },
-      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end' },
+      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end', surface: true },
     ],
   },
   'command/done': { rules: [{ kind: 'value', path: 'data.sourceEventSeq' }] },
