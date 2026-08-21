@@ -9,6 +9,12 @@ import type { SeqReIndexRules, SeqRule, TurnReIndexRules, TurnRule } from './rul
 // DOM/@types/node types.
 declare const structuredClone: <T>(value: T) => T
 
+// Skip state carried through the forward scan.
+interface SkipState {
+  count: number // skip-n countdown, indexed by the ORIGINAL seq
+  stack: string[] // open skip-till blocks (bracket-matched closers)
+}
+
 // Extract the KInterval-selected turns and renumber them into a seed that
 // agents.create accepts. seq → contiguous from 0, turn → dense 1..N, step
 // restarts at 1. Events with all-dead references are dropped; reference
@@ -53,22 +59,19 @@ export function reIndexEvents(
   let turn = 0 // 0 = before the first turn → header events kept unconditionally
   let newSeq = 0
 
-  // Skip state, one check. `skip-n` drops this event plus the next `n` (a
-  // countdown that takes the max when overlapping); `skip-till` drops until an
-  // event of a named type appears (a stack, bracket-matching, so blocks nest).
-  // The current event's own markers are honored even while skipping — being
-  // inside a skip does NOT invalidate the marker we're about to read. Entering
-  // a new turn clears both, so an unmatched skip can't hide the next turn.
-  let skipCount = 0
-  const skipStack: string[] = []
+  // Skip state for the forward scan. The countdown is indexed by the ORIGINAL
+  // (pre-renumber) seq, so it advances over EVERY old event — selected or not —
+  // which is why the skip logic runs before the turn-membership check. The
+  // stack holds the open skip-till blocks (bracket-matched closers). Entering a
+  // new turn clears both so an unmatched skip can't hide the next turn.
+  const skipState: SkipState = { count: 0, stack: [] }
 
   for (const event of events) {
     if (event.type === 'turn/start') {
       turn = event.data.turn
-      skipCount = 0
-      skipStack.length = 0
+      skipState.count = 0
+      skipState.stack.length = 0
     }
-    if (!(turn === 0 || turnMap.has(turn))) continue
 
     // Inline wildcard+override merge for both tables (seq first, reused below).
     const seqCell = rules.seqRules[event.type]
@@ -76,23 +79,25 @@ export function reIndexEvents(
       ? seqCell.rules
       : [...(rules.seqRules['*']?.rules ?? []), ...(seqCell?.rules ?? [])]
 
-    // Update skip state from this event's markers before deciding to skip it.
+    // Advance the skip state on arrival (old-seq indexed, so it moves over every
+    // event regardless of selection), then honor this event's markers. Being
+    // inside a skip does NOT invalidate the marker we are about to read.
+    if (skipState.count > 0) skipState.count--
     const skipN = seqRuleSet.find(rule => rule.kind === 'skip-n')
-    if (skipN !== undefined) skipCount = Math.max(skipCount, skipN.n + 1)
+    if (skipN !== undefined) skipState.count = Math.max(skipState.count, skipN.n + 1)
     const skipTill = seqRuleSet.find(rule => rule.kind === 'skip-till')
-    if (skipTill !== undefined) skipStack.push(skipTill.till)
+    if (skipTill !== undefined) skipState.stack.push(skipTill.till)
 
-    // Is this event inside a skip? Evaluated once, before consuming it. A
-    // countdown run drops this event and the next `n`; a skip-till block drops
-    // every event in it, including the closer that closes the block.
-    let skip = false
-    if (skipCount > 0) { skipCount--; skip = true }
-    if (skipStack.length > 0) {
-      skip = true
-      if (event.type === skipStack[skipStack.length - 1]) skipStack.pop()
+    // Drop while inside a run or an open block (a skip-till closer is popped and
+    // dropped here too). Only then the turn-membership check drops unselected
+    // events (no renumber) — this must come AFTER the skip advance so the
+    // old-seq countdown is not stalled by events in cut-away turns.
+    if (skipState.count > 0) continue
+    if (skipState.stack.length > 0) {
+      if (event.type === skipState.stack[skipState.stack.length - 1]) skipState.stack.pop()
+      continue
     }
-
-    if (skip) continue
+    if (!(turn === 0 || turnMap.has(turn))) continue
 
     seqMap.set(event.seq, newSeq)
     if (seqSurface.includes(event.type)) surfaceSeqMap.set(event.seq, newSeq)
@@ -116,6 +121,7 @@ export function reIndexEvents(
 
   return reIndexedEvents
 }
+
 
 // Apply the turn rules: renumber the event's turn reference(s) against
 // `turnMap`. `skip-n`/`skip-till` never appear in turn rules (they carry no
