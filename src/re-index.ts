@@ -2,7 +2,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import dlv from 'dlv'
 import { dset } from 'dset'
 import { KInterval } from './k-interval.ts'
-import type { ReIndexRules, SeqReIndexRules } from './rules.ts'
+import type { ReIndexRule, ReIndexRules, SeqReIndexRules } from './rules.ts'
 
 // Node 22 has structuredClone; declared here because the project has no
 // DOM/@types/node types.
@@ -39,10 +39,11 @@ export function reIndexEvents(
   }
 
   // Two forward seq maps. `seqMap` covers every survivor; `surfaceSeqMap` only
-  // the surface nodes — types whose seqRules carry a `surface: true` interval.
-  // A surface interval re-projects onto the latter: the surface fold keeps only
-  // those in its node list, so landing on a non-surface survivor replays as
-  // "start seq N not found in surface".
+  // the surface nodes. Whether an event joins the surface is a property of its
+  // type (`seqRules[type].surface`), so a surface event's refs — including its
+  // surfaceOp range — all re-project onto surfaceSeqMap: the surface fold keeps
+  // only those in its node list, so landing on a non-surface survivor would
+  // replay as "start seq N not found in surface".
   const seqMap = new Map<number, number>()
   const surfaceSeqMap = new Map<number, number>()
 
@@ -50,22 +51,60 @@ export function reIndexEvents(
   let turn = 0 // 0 = before the first turn → header events kept unconditionally
   let newSeq = 0
 
+  // Skip state, one check. `skip-n` drops this event plus the next `n` (a
+  // countdown that takes the max when overlapping); `skip-till` drops until an
+  // event of a named type appears (a stack, bracket-matching, so blocks nest).
+  // The current event's own markers are honored even while skipping — being
+  // inside a skip does NOT invalidate the marker we're about to read. Entering
+  // a new turn clears both, so an unmatched skip can't hide the next turn.
+  let skipCount = 0
+  const skipStack: string[] = []
+
   for (const event of events) {
-    if (event.type === 'turn/start') turn = event.data.turn
+    if (event.type === 'turn/start') {
+      turn = event.data.turn
+      skipCount = 0
+      skipStack.length = 0
+    }
     if (!(turn === 0 || turnMap.has(turn))) continue
 
+    // Inline wildcard+override merge for both tables (seq first, reused below).
+    const seqCell = rules.seqRules[event.type]
+    const seqRuleSet = seqCell?.override === true
+      ? seqCell.rules
+      : [...(rules.seqRules['*']?.rules ?? []), ...(seqCell?.rules ?? [])]
+
+    // Update skip state from this event's markers before deciding to skip it.
+    const skipN = seqRuleSet.find(rule => rule.kind === 'skip-n')
+    if (skipN !== undefined) skipCount = Math.max(skipCount, skipN.n + 1)
+    const skipTill = seqRuleSet.find(rule => rule.kind === 'skip-till')
+    if (skipTill !== undefined) skipStack.push(skipTill.till)
+
+    // Is this event inside a skip? Evaluated once, before consuming it. A
+    // countdown run drops this event and the next `n`; a skip-till block drops
+    // every event in it, including the closer that closes the block.
+    let skip = false
+    if (skipCount > 0) { skipCount--; skip = true }
+    if (skipStack.length > 0) {
+      skip = true
+      if (event.type === skipStack[skipStack.length - 1]) skipStack.pop()
+    }
+
+    if (skip) continue
+
     seqMap.set(event.seq, newSeq)
-    // A surface event is one whose seqRules declare a surface interval; all its
-    // seq refs (own seq, sourceEventSeqs, surfaceOp range) are surface nodes, so
-    // the whole event resolves against surfaceSeqMap. Surface handling lives
-    // here, in the map choice; applyRules stays single-map.
-    const isSurface = (rules.seqRules[event.type] ?? []).some(rule => 'surface' in rule)
+    const isSurface = rules.seqRules[event.type]?.surface ?? false
     if (isSurface) surfaceSeqMap.set(event.seq, newSeq)
 
     const reIndexed = structuredClone(event)
 
-    if (applyRules(reIndexed, rules.seqRules, isSurface ? surfaceSeqMap : seqMap)
-      && applyRules(reIndexed, rules.turnRules, turnMap)) {
+    const turnCell = rules.turnRules[event.type]
+    const turnRuleSet = turnCell?.override === true
+      ? turnCell.rules
+      : [...(rules.turnRules['*']?.rules ?? []), ...(turnCell?.rules ?? [])]
+
+    if (applyRules(reIndexed, seqRuleSet, isSurface ? surfaceSeqMap : seqMap)
+      && applyRules(reIndexed, turnRuleSet, turnMap)) {
       reIndexedEvents.push(reIndexed)
       newSeq++
     } else {
@@ -79,20 +118,18 @@ export function reIndexEvents(
 
 function applyRules(
   event: SessionEvent,
-  rules: ReIndexRules,
+  rules: readonly ReIndexRule[],
   map: Map<number, number>,
 ): boolean {
-  const specificRule = rules[event.type] ?? []
-  const hasOverride = specificRule.some(rule => rule.override === true)
-  const rulesToApply = hasOverride ? specificRule : [...(rules['*'] ?? []), ...specificRule]
-  for (const rule of rulesToApply) {
+  for (const rule of rules) {
     if (rule.kind === 'value') {
       if (!applyValue(event, rule.path, map)) return false
     } else if (rule.kind === 'array') {
       if (!applyArray(event, rule.path, map)) return false
-    } else {
+    } else if (rule.kind === 'interval') {
       if (!applyInterval(event, rule.startPath, rule.endPath, map)) return false
     }
+    // skip-n and skip-till carry no refs; the scan loop handles them.
   }
   return true
 }

@@ -155,6 +155,26 @@ test('reIndexEvents: interval rule intersects and re-projects replace start/end'
   assert.equal(op.end, 2)
 })
 
+test('reIndexEvents: a whole compaction block is skipped (records and checkpoint)', () => {
+  // A completed /compact inside turn2: start → summary → checkpoint → end. The
+  // whole block must leave the seed — no compaction/* and no checkpoint — so the
+  // token fold never sees an orphan replace.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
+    turnStart(2, 4),
+    ev(5, 'compaction/start', { turn: 2, compactionId: 'c1' }),
+    ev(6, 'compaction/summary', { turn: 2, compactionId: 'c1', shadowedRange: { start: 1, end: 2 }, shadowedTokenCount: 10, summary: [], provider: 'p', model: 'm' }),
+    userMsg(7, { sourceEventSeqs: [5, 6, 1, 2], surfaceOp: { op: 'replace', start: 1, end: 2 } }),
+    ev(8, 'compaction/end', { turn: 2, compactionId: 'c1' }),
+    turnEnd(2, 9),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1,2'), { turnRules, seqRules })
+  assert.equal(out.filter(e => e.type.startsWith('compaction/')).length, 0)
+  // the checkpoint is part of the block and must not leak
+  assert.equal(out.filter(e => e.type === 'user/message').length, 1) // only turn1's append remains
+  assert.doesNotThrow(() => foldSurface(out))
+})
+
 test('reIndexEvents: interval with empty intersection drops the replace event', () => {
   const log: SessionEvent[] = [
     turnStart(1, 0), assistantMsg(1, 1), turnEnd(1, 2),
@@ -201,10 +221,10 @@ test('reIndexEvents: override flag forces the wildcard rule to be skipped', () =
   const outDefault = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
   assert.equal(outDefault.filter(e => e.type === 'custom/event').length, 0)
 
-  // override: custom/event's rule has override:true, fully skipping the wildcard data.turn
+  // override: custom/event's cell has override:true, fully skipping the wildcard data.turn
   const customTurn: ReIndexRules = {
     ...turnRules,
-    'custom/event': [{ kind: 'value', path: 'data.other', override: true }],
+    'custom/event': { override: true, rules: [{ kind: 'value', path: 'data.other' }] },
   }
   const outSkip = reIndexEvents(log, KInterval.from_string('1'), { turnRules: customTurn, seqRules })
   // data.other missing → value rule skips → custom/event survives (wildcard data.turn overridden)
@@ -239,8 +259,8 @@ test('reIndexEvents: array rule skips on non-array field, event kept', () => {
     turnStart(1, 0), ev(1, 'custom/event', { refs: 5 }), turnEnd(1, 1),
   ]
   const customSeq: SeqReIndexRules = {
-    '*': [{ kind: 'value', path: 'seq' }],
-    'custom/event': [{ kind: 'array', path: 'data.refs' }],
+    '*': { surface: false, rules: [{ kind: 'value', path: 'seq' }] },
+    'custom/event': { surface: false, rules: [{ kind: 'array', path: 'data.refs' }] },
   }
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
   assert.equal(out.filter(e => e.type === 'custom/event').length, 1)
@@ -265,7 +285,7 @@ test('reIndexEvents: seqRules override flag skips the wildcard seq rule', () => 
   ]
   const customSeq: SeqReIndexRules = {
     ...seqRules,
-    'custom/event': [{ kind: 'value', path: 'data.customSeq', override: true }],
+    'custom/event': { surface: false, override: true, rules: [{ kind: 'value', path: 'data.customSeq' }] },
   }
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
   const evt = out.find(e => e.type === 'custom/event')!
@@ -329,15 +349,15 @@ test('reIndexEvents: no completed turn/end yields an empty seed (early return)',
 
 // ---- surface-replay validity ----
 //
-// A kept surface replacement (a /compact checkpoint) must remain a valid
-// surface operation in the seed. Its `surfaceOp.start/end` re-project onto the
-// FIRST/LAST surviving surface-eligible event in the shadowed range — never a
-// non-surface survivor (e.g. a tool/call), because the surface fold keeps only
-// message-producing events in its node list. We assert the seed replays cleanly
-// through dsh-session's real `foldSurface`.
+// Real surface replacements come only from compaction/prune blocks, which are
+// skipped whole (see the skip-block tests). These standalone replaces document
+// the plain interval rule on a replacement outside any block: it re-projects
+// `surfaceOp.start/end` onto the FIRST/LAST surviving surface-eligible seq in the
+// shadowed range — never a non-surface survivor (e.g. a tool/call) — and the
+// seed must replay cleanly through dsh-session's real `foldSurface`.
 
-test('reIndexEvents: surface replace re-projects onto surface survivors and replays (tool/call inside range)', () => {
-  // turn1's u/a are cut away; the compact in turn3 shadowed [1..7] which also
+test('reIndexEvents: standalone replace re-projects onto surface survivors (tool/call inside range)', () => {
+  // turn1's u/a are cut away; the replace in turn3 shadowed [1..7] which also
   // contains turn2's tool/call (non-surface). The re-projected start must land
   // on a surface survivor (turn2's tool/result), not on the tool/call.
   const log: SessionEvent[] = [
@@ -347,20 +367,17 @@ test('reIndexEvents: surface replace re-projects onto surface survivors and repl
     userMsg(3, 10, { sourceEventSeqs: [1, 2, 6, 7], surfaceOp: { op: 'replace', start: 1, end: 7 } }),
     turnEnd(3, 11),
   ]
-  // select turns 2,3 → turn1 (and its u/a seqs 1,2) dropped; tool/call survives
   const out = reIndexEvents(log, KInterval.from_string('2,3'), { turnRules, seqRules })
-  const replace = out.find(e => e.type === 'user/message' && (e as unknown as { surfaceOp: unknown }).surfaceOp)!
+  const replace = out.find(e => e.type === 'user/message' && (e as unknown as { surfaceOp?: unknown }).surfaceOp?.['op'] === 'replace')!
   assert.ok(replace)
-  // start/end must point at surviving surface-eligible seqs, not the tool/call
   const op = (replace as unknown as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp
   const surfaceSeqs = out.map((e, i) => (['user/message', 'assistant/message', 'tool/result'].includes(e.type) ? i : -1)).filter(i => i >= 0)
   assert.ok(surfaceSeqs.includes(op.start))
   assert.ok(surfaceSeqs.includes(op.end))
-  // the real surface fold must replay the seed without throwing
   assert.doesNotThrow(() => foldSurface(out))
 })
 
-test('reIndexEvents: surface replace with a fully-cut shadowed range is dropped', () => {
+test('reIndexEvents: standalone replace with a fully-cut shadowed range is dropped', () => {
   const log: SessionEvent[] = [
     turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
     turnStart(2, 4), userMsg(2, 5), assistantMsg(2, 6, { surfaceOp: 'append' }), turnEnd(2, 7),
@@ -371,14 +388,12 @@ test('reIndexEvents: surface replace with a fully-cut shadowed range is dropped'
   // select only turn3 → every shadowed surface seq (all in turns 1,2) is dead
   const out = reIndexEvents(log, KInterval.from_string('3'), { turnRules, seqRules })
   assert.equal(out.filter(e => e.type === 'user/message').length, 0)
-  // no replace remains; the seed is just turn3's boundary + compact dropped
   assert.doesNotThrow(() => foldSurface(out))
 })
 
-test('reIndexEvents: surface replace replay is valid when only a prefix of the shadowed range survives', () => {
-  // compact in turn3 shadowed [1..6] (turn1+turn2). Cut turn2 and turn3 (drop
-  // turn1 keeps seqs 1,2; turn2's seqs 5,6 dead). Re-projected range covers only
-  // the surviving surface nodes, and the seed must still fold.
+test('reIndexEvents: standalone replace shrinks when only a prefix of the span survives', () => {
+  // the replace in turn3 shadowed [1..6] (turn1+turn2). Cut turn2 → turn2's
+  // seqs 5,6 are gone; the interval re-projects onto turn1's surviving u/a.
   const log: SessionEvent[] = [
     turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
     turnStart(2, 4), userMsg(2, 5), assistantMsg(2, 6, { surfaceOp: 'append' }), turnEnd(2, 7),
@@ -387,6 +402,113 @@ test('reIndexEvents: surface replace replay is valid when only a prefix of the s
     turnEnd(3, 10),
   ]
   const out = reIndexEvents(log, KInterval.from_string('1,3'), { turnRules, seqRules })
-  assert.ok(out.find(e => e.type === 'user/message'))
+  const replace = out.find(e => e.type === 'user/message' && (e as unknown as { surfaceOp?: unknown }).surfaceOp?.['op'] === 'replace')!
+  assert.ok(replace)
+  const op = (replace as unknown as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp
+  assert.equal(op.start, 1)
+  assert.equal(op.end, 2)
   assert.doesNotThrow(() => foldSurface(out))
+})
+
+// ---- skip blocks ----
+//
+// A compaction is one whole block ([compaction/start .. compaction/end], or
+// [compaction/prune .. its tool/result replacement]) that is excluded from the
+// seed in full — records and the summarizing checkpoint alike — so neither a
+// compact's bookkeeping nor its compression effect leaks into the child.
+
+test('reIndexEvents: an interrupted compaction block is skipped', () => {
+  // A compaction that was interrupted/failed: start + end(with error), no
+  // summary and no checkpoint. Both ends of the block are dropped.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
+    turnStart(2, 4),
+    ev(5, 'compaction/start', { turn: 2, compactionId: 'c1' }),
+    ev(6, 'compaction/end', { turn: 2, compactionId: 'c1', error: 'aborted' }),
+    turnEnd(2, 7),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1,2'), { turnRules, seqRules })
+  assert.equal(out.filter(e => e.type.startsWith('compaction/')).length, 0)
+  assert.doesNotThrow(() => foldSurface(out))
+})
+
+test('reIndexEvents: an unmatched compaction/start does not hide the following turn', () => {
+  // A failed close deliberately leaves an unmatched compaction/start (no end).
+  // The skip block must be bounded to its turn so turn3's content still lands.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), userMsg(1, 1), assistantMsg(1, 2, { surfaceOp: 'append' }), turnEnd(1, 3),
+    turnStart(2, 4),
+    ev(5, 'compaction/start', { turn: 2, compactionId: 'c1' }),
+    userMsg(6, { sourceEventSeqs: [1, 2], surfaceOp: { op: 'replace', start: 1, end: 2 } }),
+    turnEnd(2, 7),
+    turnStart(3, 8), userMsg(3, 9), assistantMsg(3, 10, { surfaceOp: 'append' }), turnEnd(3, 11),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1,2,3'), { turnRules, seqRules })
+  // compaction/start and the checkpoint inside the open block are gone
+  assert.equal(out.filter(e => e.type.startsWith('compaction/')).length, 0)
+  // turn3's message survives (the block did not swallow the next turn)
+  assert.ok(out.find(e => e.type === 'user/message' && (e as unknown as { surfaceOp: unknown }).surfaceOp === 'append' && e.data.turn === 3))
+  assert.doesNotThrow(() => foldSurface(out))
+})
+
+test('reIndexEvents: skip-n drops a prune pair (compaction/prune + tool/result replacement)', () => {
+  // A prune in turn2 shortens the turn1 tool/result (seq 2): it is immediately
+  // preceded by a compaction/prune metering event and lands a tool/result
+  // replacement. skip-n (n=1) drops both, leaving the original tool/result.
+  const log: SessionEvent[] = [
+    turnStart(1, 0), toolCall(1, 1), toolResult(1, 2), assistantMsg(1, 3, { surfaceOp: 'append' }), turnEnd(1, 4),
+    turnStart(2, 5),
+    ev(6, 'compaction/prune', { turn: 2, shadowedRange: { start: 2, end: 2 }, shadowedSeqs: [2], shadowedTokenCount: 5 }),
+    toolResult(2, 7, { sourceEventSeqs: [2], surfaceOp: { op: 'replace', start: 2, end: 2 } }),
+    turnEnd(2, 8),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1,2'), { turnRules, seqRules })
+  // the metering event and the replacement tool/result are both gone
+  assert.equal(out.filter(e => e.type === 'compaction/prune').length, 0)
+  assert.equal(out.filter(e => e.type === 'tool/result').length, 1) // only the original (seq 2) survives
+  assert.doesNotThrow(() => foldSurface(out))
+})
+
+test('reIndexEvents: nested skip-till blocks close like brackets', () => {
+  const customSeq: SeqReIndexRules = {
+    ...seqRules,
+    'outer/start': { surface: false, rules: [{ kind: 'skip-till', till: 'outer/end' }] },
+    'inner/start': { surface: false, rules: [{ kind: 'skip-till', till: 'inner/end' }] },
+  }
+  const log: SessionEvent[] = [
+    turnStart(1, 0),
+    ev(1, 'outer/start', { turn: 1 }),
+    ev(2, 'inner/start', { turn: 1 }),
+    ev(3, 'inner/end', { turn: 1 }),
+    ev(4, 'outer/end', { turn: 1 }),
+    ev(5, 'after', { turn: 1 }),
+    turnEnd(1, 6),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
+  // the inner block closes before the outer one; everything inside is gone
+  assert.equal(out.filter(e => ['outer/start', 'inner/start', 'inner/end', 'outer/end'].includes(e.type)).length, 0)
+  // the event after the outer block survives
+  assert.ok(out.find(e => e.type === 'after'))
+})
+
+test('reIndexEvents: skip-n takes the max when an overlapping run extends it', () => {
+  const customSeq: SeqReIndexRules = {
+    ...seqRules,
+    'a/start': { surface: false, rules: [{ kind: 'skip-n', n: 1 }] },
+    'b/start': { surface: false, rules: [{ kind: 'skip-n', n: 3 }] },
+  }
+  const log: SessionEvent[] = [
+    turnStart(1, 0),
+    ev(1, 'a/start', { turn: 1 }), // skip this + 1
+    ev(2, 'b/start', { turn: 1 }), // lands mid-run: extend to this + 3
+    ev(3, 'x', { turn: 1 }),
+    ev(4, 'x', { turn: 1 }),
+    ev(5, 'x', { turn: 1 }),
+    ev(6, 'x', { turn: 1 }),
+    ev(7, 'x', { turn: 1 }),
+    turnEnd(1, 8),
+  ]
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
+  // skipped: a/start, b/start, x3, x4, x5 (b/start extends the run); x6,x7 live
+  assert.equal(out.filter(e => e.type === 'x').length, 2)
 })
