@@ -1,6 +1,6 @@
 # dsh-klip
 
-A plugin that cuts selected turn ranges out of a conversation and merges them into a new session.
+A plugin that clips selected turn ranges out of a conversation and merges them into a new session.
 
 > [简体中文](./README.zh.md)
 
