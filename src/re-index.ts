@@ -39,8 +39,8 @@ export function reIndexEvents(
   }
 
   // Two forward seq maps. `seqMap` covers every survivor; `surfaceSeqMap` only
-  // the surface nodes — types whose seqRules declare a surface-interval. A
-  // surface-interval re-projects onto the latter: the surface fold keeps only
+  // the surface nodes — types whose seqRules carry a `surface: true` interval.
+  // A surface interval re-projects onto the latter: the surface fold keeps only
   // those in its node list, so landing on a non-surface survivor replays as
   // "start seq N not found in surface".
   const seqMap = new Map<number, number>()
@@ -55,11 +55,11 @@ export function reIndexEvents(
     if (!(turn === 0 || turnMap.has(turn))) continue
 
     seqMap.set(event.seq, newSeq)
-    // A surface event is one whose seqRules declare a surface-interval; all its
+    // A surface event is one whose seqRules declare a surface interval; all its
     // seq refs (own seq, sourceEventSeqs, surfaceOp range) are surface nodes, so
     // the whole event resolves against surfaceSeqMap. Surface handling lives
     // here, in the map choice; applyRules stays single-map.
-    const isSurface = (rules.seqRules[event.type] ?? []).some(rule => rule.kind === 'surface-interval')
+    const isSurface = (rules.seqRules[event.type] ?? []).some(rule => 'surface' in rule)
     if (isSurface) surfaceSeqMap.set(event.seq, newSeq)
 
     const reIndexed = structuredClone(event)
@@ -79,23 +79,20 @@ export function reIndexEvents(
 
 function applyRules(
   event: SessionEvent,
-  rules: SeqReIndexRules,
+  rules: ReIndexRules,
   map: Map<number, number>,
 ): boolean {
   const specificRule = rules[event.type] ?? []
   const hasOverride = specificRule.some(rule => rule.override === true)
   const rulesToApply = hasOverride ? specificRule : [...(rules['*'] ?? []), ...specificRule]
   for (const rule of rulesToApply) {
-    let ok: boolean
     if (rule.kind === 'value') {
-      ok = applyValue(event, rule.path, map)
+      if (!applyValue(event, rule.path, map)) return false
     } else if (rule.kind === 'array') {
-      ok = applyArray(event, rule.path, map)
+      if (!applyArray(event, rule.path, map)) return false
     } else {
-      // interval and surface-interval both project onto the caller's map.
-      ok = applyInterval(event, rule.startPath, rule.endPath, map)
+      if (!applyInterval(event, rule.startPath, rule.endPath, map)) return false
     }
-    if (!ok) return false
   }
   return true
 }
