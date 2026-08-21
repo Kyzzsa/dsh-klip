@@ -2,7 +2,8 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import dlv from 'dlv'
 import { dset } from 'dset'
 import { KInterval } from './k-interval.ts'
-import type { ReIndexRule, ReIndexRules, SeqReIndexRules } from './rules.ts'
+import { seqSurface } from './rules.ts'
+import type { SeqReIndexRules, SeqRule, TurnReIndexRules, TurnRule } from './rules.ts'
 
 // Node 22 has structuredClone; declared here because the project has no
 // DOM/@types/node types.
@@ -17,7 +18,7 @@ declare const structuredClone: <T>(value: T) => T
 export function reIndexEvents(
   events: readonly SessionEvent[],
   kInterval: KInterval,
-  rules: { turnRules: ReIndexRules; seqRules: SeqReIndexRules },
+  rules: { turnRules: TurnReIndexRules; seqRules: SeqReIndexRules },
 ): SessionEvent[] {
   // Only completed turns (turn/end) are selectable; that event also fixes the
   // turn count the KInterval is instantiated against. No completed turn →
@@ -39,13 +40,12 @@ export function reIndexEvents(
   }
 
   // Two forward seq maps. `seqMap` covers every survivor; `surfaceSeqMap` only
-  // the surface nodes (events whose type cell carries `surface: true`). A
-  // reference re-projects onto `seqMap` unless its OWN rule is marked
-  // `surface: true` (e.g. a surfaceOp range), which re-projects onto
-  // `surfaceSeqMap` — the surface fold keeps only message nodes, so landing on
-  // a non-surface survivor would replay as "start seq N not found in surface".
-  // Normal refs like `sourceEventSeqs` point at plain records (tool/call, chunks)
-  // and must use `seqMap` or they would be wrongly dropped.
+  // the surface nodes (the event types listed in `seqSurface`). A rule re-projects
+  // onto `seqMap` unless it is a `surface-interval` (e.g. a surfaceOp range),
+  // which re-projects onto `surfaceSeqMap` — the surface fold keeps only message
+  // nodes, so landing on a non-surface survivor would replay as "start seq N not
+  // found in surface". Normal refs like `sourceEventSeqs` point at plain records
+  // (tool/call, chunks) and must use `seqMap` or they would be wrongly dropped.
   const seqMap = new Map<number, number>()
   const surfaceSeqMap = new Map<number, number>()
 
@@ -95,8 +95,7 @@ export function reIndexEvents(
     if (skip) continue
 
     seqMap.set(event.seq, newSeq)
-    const isSurface = rules.seqRules[event.type]?.surface ?? false
-    if (isSurface) surfaceSeqMap.set(event.seq, newSeq)
+    if (seqSurface.includes(event.type)) surfaceSeqMap.set(event.seq, newSeq)
 
     const reIndexed = structuredClone(event)
 
@@ -105,8 +104,8 @@ export function reIndexEvents(
       ? turnCell.rules
       : [...(rules.turnRules['*']?.rules ?? []), ...(turnCell?.rules ?? [])]
 
-    if (applyRules(reIndexed, seqRuleSet, seqMap, surfaceSeqMap)
-      && applyRules(reIndexed, turnRuleSet, turnMap)) {
+    if (applySeqRules(reIndexed, seqRuleSet, seqMap, surfaceSeqMap)
+      && applyTurnRules(reIndexed, turnRuleSet, turnMap)) {
       reIndexedEvents.push(reIndexed)
       newSeq++
     } else {
@@ -118,23 +117,46 @@ export function reIndexEvents(
   return reIndexedEvents
 }
 
-function applyRules(
+// Apply the turn rules: renumber the event's turn reference(s) against
+// `turnMap`. `skip-n`/`skip-till` never appear in turn rules (they carry no
+// refs and the scan loop handles them).
+function applyTurnRules(
   event: SessionEvent,
-  rules: readonly ReIndexRule[],
-  map: Map<number, number>,
-  surfaceMap: Map<number, number> = map,
+  rules: readonly TurnRule[],
+  turnMap: Map<number, number>,
 ): boolean {
   for (const rule of rules) {
     if (rule.kind === 'value') {
-      if (!applyValue(event, rule.path, map)) return false
+      if (!applyValue(event, rule.path, turnMap)) return false
     } else if (rule.kind === 'array') {
-      if (!applyArray(event, rule.path, map)) return false
+      if (!applyArray(event, rule.path, turnMap)) return false
     } else if (rule.kind === 'interval') {
-      // An interval marked `surface: true` re-projects onto the surface-only
-      // map (e.g. a surfaceOp range); otherwise it uses the all-survivor map.
-      if (!applyInterval(event, rule.startPath, rule.endPath, rule.surface === true ? surfaceMap : map)) return false
+      if (!applyInterval(event, rule.startPath, rule.endPath, turnMap)) return false
     }
-    // skip-n and skip-till carry no refs; the scan loop handles them.
+  }
+  return true
+}
+
+// Apply the seq rules: renumber the event's seq references. `value`/`array`/
+// `interval` use the all-survivor `seqMap`; a `surface-interval` uses the
+// surface-only `surfaceSeqMap`. `skip-n`/`skip-till` carry no refs and are
+// handled by the scan loop.
+function applySeqRules(
+  event: SessionEvent,
+  rules: readonly SeqRule[],
+  seqMap: Map<number, number>,
+  surfaceSeqMap: Map<number, number>,
+): boolean {
+  for (const rule of rules) {
+    if (rule.kind === 'value') {
+      if (!applyValue(event, rule.path, seqMap)) return false
+    } else if (rule.kind === 'array') {
+      if (!applyArray(event, rule.path, seqMap)) return false
+    } else if (rule.kind === 'interval') {
+      if (!applyInterval(event, rule.startPath, rule.endPath, seqMap)) return false
+    } else if (rule.kind === 'surface-interval') {
+      if (!applyInterval(event, rule.startPath, rule.endPath, surfaceSeqMap)) return false
+    }
   }
   return true
 }

@@ -47,34 +47,37 @@ KInterval 是逗号分隔的子句,每段按 turn 编号(从 1 开始)选择;负
 
 ## 自定义规则
 
-重排由 `src/rules.ts` 的两张表驱动:`turnRules` 重映射 turn,`seqRules` 重映射 seq 并翻译事件间的引用。每种事件类型映射到一个**单元格** — 一个 `rules` 数组,外加两个可选的 presence 标志,作用于整类(设为 `true` 即开启,省略即 false,从不写 `false`):
+重排由 `src/rules.ts` 的两张表驱动:`turnRules` 重映射 turn,`seqRules` 重映射 seq 并翻译事件间的引用。每种事件类型映射到一个**单元格** — 一个 `rules` 数组,外加一个可选的 presence 标志:
 
 - **`override: true`** — 该类型的规则完全取代通配符 `*`(缺省表示在其基础上扩展)。
-- **`surface`**(仅 seq 表)— 该类型加入模型可见 surface:即它是产出消息的节点,会被加入 surface-only seq map。但它的 `surfaceOp` 区间规则仍须在该规则内标 `surface: true`,才会投影到 surface 节点。
 
-`surface` 也出现在**区间规则**上(仅 seq 表):在该规则标 `surface: true`,表示这条引用的目标必须是 surface 节点(如 `surfaceOp.start` / `surfaceOp.end`)。普通引用(如 `sourceEventSeqs`,指向 `tool/call` 等普通记录)则不标,这样它们投影到**全部**幸存者。
+两张表使用**各自独立的规则类型**。`turnRules` 重编号 turn 引用(`value` / `array` / `interval`);`seqRules` 负责 seq 引用以及结构性的跳过规则。`seqRules` 的规则:
 
-支持第三方事件类型就加一个单元格:
+- **`value`** — 单个数值引用(如 `seq`)。目标不在结果中则删除该事件。
+- **`array`** — 数值数组引用(如 `sourceEventSeqs`)。过滤失效成员,仅当全部成员失效才删除。
+- **`interval`** — 闭区间引用(如 `surfaceOp.start` / `surfaceOp.end`)。与**全部**幸存的 seq 集合求交集,为空才删除。
+- **`surface-interval`** — 闭区间引用,但投影到 **surface-only** seq map(见下方 `seqSurface`)。`surfaceOp.start` / `surfaceOp.end` 用的就是它。
+- **`skip-n`** — 删除该事件及其后 `n` 个事件(固定长度),用于删除一对 prune。
+- **`skip-till`** — 一直删除直到出现类型为 `till` 的事件(含该事件);用括号匹配栈实现,因此跳过块可以嵌套。
+
+**surface 不再作为单元格或规则的标志**,而是独立成一张表 `seqSurface`,列出加入模型可见 surface 的事件类型(即产出消息、会被 surface fold 保留的节点)。列在该表里的类型会被加入 surface-only seq map;`surface-interval` 规则使用这张 map,而其它所有引用(`value` / `array` / `interval`)都投影到**全部**幸存者。普通引用如 `sourceEventSeqs`(指向 `tool/call` 等普通记录)用的是 `interval` / `array`,恰恰是为了不被限制到 surface。
+
+支持第三方事件类型就加一个单元格(如果它产出消息,同时把它列进 `seqSurface`):
 
 ```ts
 // src/rules.ts
+export const seqSurface = ['user/message', 'assistant/message', 'tool/result']
+
 export const seqRules: SeqReIndexRules = {
   '*': { rules: [{ kind: 'value', path: 'seq' }] },
   // ...已有的 user/message、tool/result 等条目...
   'my/plugin/event': {
-    surface: true, // 加入 surface(可选)
     rules: [{ kind: 'value', path: 'data.parentSeq' }], // 新增
   },
 }
 ```
 
-改完执行 `npm run build` 并重启 profile。每个单元格支持五种规则:
-
-- **`value`** — 单个数值引用(如 `seq`、`data.turn`)。目标不在结果中则删除该事件。
-- **`array`** — 数值数组引用(如 `sourceEventSeqs`)。过滤失效成员,仅当全部成员失效才删除。
-- **`interval`** — 闭区间引用(如 `surfaceOp.start` / `surfaceOp.end`)。与幸存的 seq 集合求交集,为空才删除。
-- **`skip-n`** — 删除该事件及其后 `n` 个事件(固定长度),用于删除一对 prune。
-- **`skip-till`** — 一直删除直到出现类型为 `till` 的事件(含该事件);用括号匹配栈实现,因此跳过块可以嵌套。
+改完执行 `npm run build` 并重启 profile。
 
 ## 原理
 

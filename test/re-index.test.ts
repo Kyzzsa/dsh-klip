@@ -5,7 +5,7 @@ import { foldSurface } from '@deepseek-ai/dsh-session/surface'
 import { KInterval } from '../src/k-interval.ts'
 import { reIndexEvents } from '../src/re-index.ts'
 import { turnRules, seqRules } from '../src/rules.ts'
-import type { ReIndexRules, SeqReIndexRules } from '../src/rules.ts'
+import type { TurnReIndexRules, SeqReIndexRules } from '../src/rules.ts'
 
 // ---- helpers that build synthetic events ----
 
@@ -222,7 +222,7 @@ test('reIndexEvents: override flag forces the wildcard rule to be skipped', () =
   assert.equal(outDefault.filter(e => e.type === 'custom/event').length, 0)
 
   // override: custom/event's cell has override:true, fully skipping the wildcard data.turn
-  const customTurn: ReIndexRules = {
+  const customTurn: TurnReIndexRules = {
     ...turnRules,
     'custom/event': { override: true, rules: [{ kind: 'value', path: 'data.other' }] },
   }

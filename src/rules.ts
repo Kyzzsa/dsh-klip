@@ -6,87 +6,98 @@
 //   Reference invalidation cascades: an event with all-dead references is
 //   dropped, and anything that then points at it is dropped in turn.
 //
-// Each rule is one of five shapes; a missing/mistyped field → skipped (kept);
-// a present-but-fully-dead value → dropped:
-//   - value      : single numeric ref. Not in map → drop.
-//   - array      : numeric array ref. All dead → drop; some dead → filter.
-//   - interval   : closed [start,end]. No overlap with survivors → drop; else re-project.
-//   - skip-n     : drop this event and the next `n` events — a fixed-length run,
-//     used for a prune ([compaction/prune, tool/result replacement], n=1).
-//   - skip-till  : drop events until one of type `till` appears (inclusive); a
-//     stack (bracket matching) supports nesting — used to remove a whole
+// The two tables have SEPARATE rule types. turnRules renumbers a turn
+// reference (`value`/`array`/`interval`); seqRules owns the seq reference shapes
+// plus the structural skip rules.
+//
+// Rule shapes; a missing/mistyped field → skipped (kept); a present-but-fully
+// dead value → dropped:
+//   - value            : single numeric ref. Not in map → drop.
+//   - array            : numeric array ref. All dead → drop; some dead → filter.
+//   - interval         : closed [start,end] re-projected onto ALL survivors.
+//   - surface-interval : closed [start,end] re-projected onto the surface-only
+//     map (see `seqSurface` below). Used by a `surfaceOp.start/end` replacement.
+//   - skip-n           : drop this event and the next `n` events — a fixed-length
+//     run, used for a prune ([compaction/prune, tool/result replacement], n=1).
+//   - skip-till        : drop events until one of type `till` appears (inclusive);
+//     a stack (bracket matching) supports nesting — used to remove a whole
 //     compaction (`compaction/start` → till `compaction/end`), records and the
 //     summarizing checkpoint together.
 //
-// `surface` appears at TWO levels (both presence flags, set to `true` or omit):
-//   - On the CELL (seq table only): whether the EVENT TYPE joins the model-visible
-//     surface — i.e. it is a message-producing node that gets added to the
-//     surface-only seq map. turnRules never needs it.
-//   - On an INTERVAL RULE (seq table only): whether that rule's refs must re-project
-//     onto surface nodes only (e.g. `surfaceOp.start/end`). A normal reference
-//     (e.g. `sourceEventSeqs` → a `tool/call`) leaves it off so it re-projects onto
-//     ALL survivors.
+// `seqSurface` is a SEPARATE table (not a cell flag): it lists the EVENT TYPES
+// that join the model-visible surface — message-producing nodes that the surface
+// fold keeps (user/message, assistant/message, tool/result). A type in that list
+// is added to the surface-only seq map. A `surface-interval` rule uses that map;
+// every other reference (`value`/`array`/`interval`) re-projects onto ALL
+// survivors — e.g. `sourceEventSeqs` → a plain `tool/call` record.
 //
-// Cell-level flags (a sibling of the rule array):
-//   - `override` : the type's own rules fully replace the wildcard; absent
+// Cell-level flag (a sibling of the rule array):
+//   - `override`: the type's own rules fully replace the wildcard; absent
 //     (not `true`) means they extend it.
-//   - `surface`  : the type joins the surface (see above).
 // `false` is never written; absent means false.
 //
 // Maps driving the renumbering:
-//   - turnMap: oldTurn → newTurn (1..N), selected turns only.
-//   - seqMap : oldSeq → newSeq (0..N-1), filled in one forward scan; refs point
-//              only at earlier seqs, so targets are already in the map.
+//   - turnMap       : oldTurn → newTurn (1..N), selected turns only.
+//   - seqMap        : oldSeq → newSeq (0..N-1), filled in one forward scan; refs
+//                     point only at earlier seqs, so targets are already in the map.
+//   - surfaceSeqMap : oldSeq → newSeq for the `seqSurface` types only.
 
-// Base rule: turn fields and ordinary seq references. `surface` is allowed only
-// on an interval rule (seq table only); no override here.
-export type ReIndexRule =
+// Turn table: renumbers turn references (single, array, or a closed turn range).
+export type TurnRule =
   | { kind: 'value'; path: string }
   | { kind: 'array'; path: string }
-  | { kind: 'interval'; startPath: string; endPath: string; surface?: true }
+  | { kind: 'interval'; startPath: string; endPath: string }
+export interface TurnTypeRules {
+  override?: true
+  rules: readonly TurnRule[]
+}
+
+// Seq table: renumbers seq references and drops structural blocks.
+export type SeqRule =
+  | { kind: 'value'; path: string }
+  | { kind: 'array'; path: string }
+  | { kind: 'interval'; startPath: string; endPath: string }
+  | { kind: 'surface-interval'; startPath: string; endPath: string }
   | { kind: 'skip-n'; n: number }
   | { kind: 'skip-till'; till: string }
-
-// A type cell common to both tables: `override` plus the rule array.
-export interface RuleCell {
+export interface SeqTypeRules {
   override?: true
-  rules: readonly ReIndexRule[]
+  rules: readonly SeqRule[]
 }
 
-// A seq table cell: adds whether the type joins the surface. Both flags are
-// presence flags — set to `true` or omit; absent means false.
-export interface SeqTypeRules extends RuleCell {
-  surface?: true
-}
-
-export type ReIndexRules = Readonly<Record<string, RuleCell>>
+export type TurnReIndexRules = Readonly<Record<string, TurnTypeRules>>
 export type SeqReIndexRules = Readonly<Record<string, SeqTypeRules>>
 
-export const turnRules: ReIndexRules = {
+// Event types that join the model-visible surface — message-producing nodes the
+// surface fold keeps. A type listed here is added to the surface-only seq map.
+export const seqSurface: readonly string[] = [
+  'user/message',
+  'assistant/message',
+  'tool/result',
+]
+
+export const turnRules: TurnReIndexRules = {
   '*': { rules: [{ kind: 'value', path: 'data.turn' }] },
 }
 
 export const seqRules: SeqReIndexRules = {
   '*': { rules: [{ kind: 'value', path: 'seq' }] },
   'user/message': {
-    surface: true,
     rules: [
       { kind: 'array', path: 'sourceEventSeqs' },
-      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end', surface: true },
+      { kind: 'surface-interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end' },
     ],
   },
   'assistant/message': {
-    surface: true,
     rules: [
       { kind: 'array', path: 'sourceEventSeqs' },
-      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end', surface: true },
+      { kind: 'surface-interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end' },
     ],
   },
   'tool/result': {
-    surface: true,
     rules: [
       { kind: 'array', path: 'sourceEventSeqs' },
-      { kind: 'interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end', surface: true },
+      { kind: 'surface-interval', startPath: 'surfaceOp.start', endPath: 'surfaceOp.end' },
     ],
   },
   'command/done': { rules: [{ kind: 'value', path: 'data.sourceEventSeq' }] },

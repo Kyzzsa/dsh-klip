@@ -47,34 +47,37 @@ Whitespace is ignored, so `1..2` and `1 .. 2` are equivalent.
 
 ## Customizing rules
 
-Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn` values, and `seqRules` remaps `seq` and translates references between events. Each event type maps to a **cell** — a `rules` array plus two optional presence flags that apply to the whole type (set one to `true` or omit it; absent means false):
+Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn` values, and `seqRules` remaps `seq` and translates references between events. Each event type maps to a **cell** — a `rules` array plus an optional presence flag:
 
 - **`override: true`** — the type's own rules fully replace the `*` wildcard (default: they extend it).
-- **`surface`** (seq table only) — the type joins the model-visible surface: it is a message-producing node, so it is added to the surface-only seq map. A surface event still needs its `surfaceOp` interval rule marked `surface: true` (rule level) to re-project onto surface nodes only.
 
-`surface` also appears **on an `interval` rule** (seq table only): setting `surface: true` there means that rule's reference must land on a surface node (e.g. `surfaceOp.start` / `surfaceOp.end`). Ordinary references like `sourceEventSeqs` — which point at plain records such as `tool/call` — leave it off so they re-project onto **all** survivors.
+The two tables have **separate rule types**. `turnRules` renumbers turn references (`value` / `array` / `interval`); `seqRules` owns the seq references plus the structural skip rules. `seqRules` rules:
 
-To support a third-party event type, add a cell:
+- **`value`** — a single numeric reference (e.g. `seq`). The event is dropped if the target is not in the result.
+- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`). Dead members are filtered out; the event is dropped only when all members are dead.
+- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`). It is intersected with the **all** surviving seq set; the event is dropped only when the intersection is empty.
+- **`surface-interval`** — a closed-interval reference re-projected onto the **surface-only** seq map (see `seqSurface`). This is what `surfaceOp.start` / `surfaceOp.end` use.
+- **`skip-n`** — drops this event and the next `n` events (a fixed-length run), used to drop a prune pair.
+- **`skip-till`** — drops events until one of type `till` appears (inclusive); uses a bracket-matching stack, so skip blocks nest.
+
+The **surface** is not a cell or rule flag: it is its own table, `seqSurface`, listing the event types that join the model-visible surface (message-producing nodes the surface fold keeps). A type in that list is added to the surface-only seq map; a `surface-interval` rule uses that map, while every other reference (`value` / `array` / `interval`) re-projects onto **all** survivors. Ordinary references like `sourceEventSeqs` — which point at plain records such as `tool/call` — use `interval`/`array` precisely so they do **not** get constrained to the surface.
+
+To support a third-party event type, add a cell (and list it in `seqSurface` if it produces a message):
 
 ```ts
 // src/rules.ts
+export const seqSurface = ['user/message', 'assistant/message', 'tool/result']
+
 export const seqRules: SeqReIndexRules = {
   '*': { rules: [{ kind: 'value', path: 'seq' }] },
   // ...existing user/message, tool/result, ... entries...
   'my/plugin/event': {
-    surface: true, // joins the surface (optional)
     rules: [{ kind: 'value', path: 'data.parentSeq' }], // new
   },
 }
 ```
 
-Rebuild (`npm run build`) and restart the profile to apply. Each cell supports five rule kinds:
-
-- **`value`** — a single numeric reference (e.g. `seq`, `data.turn`). The event is dropped if the target is not in the result.
-- **`array`** — a numeric array reference (e.g. `sourceEventSeqs`). Dead members are filtered out; the event is dropped only when all members are dead.
-- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`). It is intersected with the surviving seq set; the event is dropped only when the intersection is empty.
-- **`skip-n`** — drops this event and the next `n` events (a fixed-length run), used to drop a prune pair.
-- **`skip-till`** — drops events until one of type `till` appears (inclusive); uses a bracket-matching stack, so skip blocks nest.
+Rebuild (`npm run build`) and restart the profile to apply.
 
 ## How it works
 
