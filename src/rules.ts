@@ -24,8 +24,9 @@
 //   - `override` : the type's own rules fully replace the wildcard; absent
 //     (not `true`) means they extend it.
 //   - `surface`  (seq table only) : the type joins the model-visible surface, so
-//     its refs re-project onto surface nodes only. Both default to false when
-//     undefined. turnRules never needs `surface`.
+//     its refs re-project onto surface nodes only.
+// Both are presence flags: set to `true` to turn on, or omit — absent means
+// false. `false` is never written. turnRules never needs `surface`.
 //
 // Maps driving the renumbering:
 //   - turnMap: oldTurn → newTurn (1..N), selected turns only.
@@ -46,10 +47,10 @@ export interface RuleCell {
   rules: readonly ReIndexRule[]
 }
 
-// A seq table cell: adds whether the type joins the surface. Both flags default
-// to false when undefined.
+// A seq table cell: adds whether the type joins the surface. Both flags are
+// presence flags — set to `true` or omit; absent means false.
 export interface SeqTypeRules extends RuleCell {
-  surface?: boolean
+  surface?: true
 }
 
 export type ReIndexRules = Readonly<Record<string, RuleCell>>

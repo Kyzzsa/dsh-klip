@@ -47,7 +47,7 @@ KInterval 是逗号分隔的子句,每段按 turn 编号(从 1 开始)选择;负
 
 ## 自定义规则
 
-重排由 `src/rules.ts` 的两张表驱动:`turnRules` 重映射 turn,`seqRules` 重映射 seq 并翻译事件间的引用。每种事件类型映射到一个**单元格** — 一个 `rules` 数组,外加两个可选的类型级标志,作用于整类,缺省都为 false:
+重排由 `src/rules.ts` 的两张表驱动:`turnRules` 重映射 turn,`seqRules` 重映射 seq 并翻译事件间的引用。每种事件类型映射到一个**单元格** — 一个 `rules` 数组,外加两个可选的 presence 标志,作用于整类(设为 `true` 即开启,省略即 false,从不写 `false`):
 
 - **`override: true`** — 该类型的规则完全取代通配符 `*`(缺省表示在其基础上扩展)。
 - **`surface`**(仅 seq 表)— 该类型加入模型可见 surface,其引用只投影到 surface 节点(如 `surfaceOp`)。

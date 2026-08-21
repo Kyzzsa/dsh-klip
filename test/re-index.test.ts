@@ -259,8 +259,8 @@ test('reIndexEvents: array rule skips on non-array field, event kept', () => {
     turnStart(1, 0), ev(1, 'custom/event', { refs: 5 }), turnEnd(1, 1),
   ]
   const customSeq: SeqReIndexRules = {
-    '*': { surface: false, rules: [{ kind: 'value', path: 'seq' }] },
-    'custom/event': { surface: false, rules: [{ kind: 'array', path: 'data.refs' }] },
+    '*': { rules: [{ kind: 'value', path: 'seq' }] },
+    'custom/event': { rules: [{ kind: 'array', path: 'data.refs' }] },
   }
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
   assert.equal(out.filter(e => e.type === 'custom/event').length, 1)
@@ -285,7 +285,7 @@ test('reIndexEvents: seqRules override flag skips the wildcard seq rule', () => 
   ]
   const customSeq: SeqReIndexRules = {
     ...seqRules,
-    'custom/event': { surface: false, override: true, rules: [{ kind: 'value', path: 'data.customSeq' }] },
+    'custom/event': { override: true, rules: [{ kind: 'value', path: 'data.customSeq' }] },
   }
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
   const evt = out.find(e => e.type === 'custom/event')!
@@ -472,8 +472,8 @@ test('reIndexEvents: skip-n drops a prune pair (compaction/prune + tool/result r
 test('reIndexEvents: nested skip-till blocks close like brackets', () => {
   const customSeq: SeqReIndexRules = {
     ...seqRules,
-    'outer/start': { surface: false, rules: [{ kind: 'skip-till', till: 'outer/end' }] },
-    'inner/start': { surface: false, rules: [{ kind: 'skip-till', till: 'inner/end' }] },
+    'outer/start': { rules: [{ kind: 'skip-till', till: 'outer/end' }] },
+    'inner/start': { rules: [{ kind: 'skip-till', till: 'inner/end' }] },
   }
   const log: SessionEvent[] = [
     turnStart(1, 0),
@@ -494,8 +494,8 @@ test('reIndexEvents: nested skip-till blocks close like brackets', () => {
 test('reIndexEvents: skip-n takes the max when an overlapping run extends it', () => {
   const customSeq: SeqReIndexRules = {
     ...seqRules,
-    'a/start': { surface: false, rules: [{ kind: 'skip-n', n: 1 }] },
-    'b/start': { surface: false, rules: [{ kind: 'skip-n', n: 3 }] },
+    'a/start': { rules: [{ kind: 'skip-n', n: 1 }] },
+    'b/start': { rules: [{ kind: 'skip-n', n: 3 }] },
   }
   const log: SessionEvent[] = [
     turnStart(1, 0),

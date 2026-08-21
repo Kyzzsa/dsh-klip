@@ -47,7 +47,7 @@ Whitespace is ignored, so `1..2` and `1 .. 2` are equivalent.
 
 ## Customizing rules
 
-Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn` values, and `seqRules` remaps `seq` and translates references between events. Each event type maps to a **cell** — a `rules` array plus two optional type-level flags that apply to the whole type, both defaulting to false when absent:
+Re-indexing is driven by two tables in `src/rules.ts`: `turnRules` remaps `turn` values, and `seqRules` remaps `seq` and translates references between events. Each event type maps to a **cell** — a `rules` array plus two optional presence flags that apply to the whole type (set one to `true` or omit it; absent means false):
 
 - **`override: true`** — the type's own rules fully replace the `*` wildcard (default: they extend it).
 - **`surface`** (seq table only) — the type joins the model-visible surface, so its references re-project onto surface nodes only (e.g. `surfaceOp`).
