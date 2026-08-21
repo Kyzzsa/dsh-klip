@@ -55,12 +55,18 @@ The two tables have **separate rule types**. `turnRules` renumbers turn referenc
 
 - **`value`** — a single numeric reference (e.g. `seq`). The event is dropped if the target is not in the result.
 - **`array`** — a numeric array reference (e.g. `sourceEventSeqs`). Dead members are filtered out; the event is dropped only when all members are dead.
-- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`). It is intersected with the **all** surviving seq set; the event is dropped only when the intersection is empty.
-- **`surface-interval`** — a closed-interval reference re-projected onto the **surface-only** seq map (see `seqSurface`). This is what `surfaceOp.start` / `surfaceOp.end` use.
+- **`interval`** — a closed-interval reference (e.g. `surfaceOp.start` / `surfaceOp.end`). It is intersected with the surviving seq set; the event is dropped only when the intersection is empty.
 - **`skip-n`** — drops this event and the next `n` events (a fixed-length run), used to drop a prune pair.
 - **`skip-till`** — drops events until one of type `till` appears (inclusive); uses a bracket-matching stack, so skip blocks nest.
 
-The **surface** is not a cell or rule flag: it is its own table, `seqSurface`, listing the event types that join the model-visible surface (message-producing nodes the surface fold keeps). A type in that list is added to the surface-only seq map; a `surface-interval` rule uses that map, while every other reference (`value` / `array` / `interval`) re-projects onto **all** survivors. Ordinary references like `sourceEventSeqs` — which point at plain records such as `tool/call` — use `interval`/`array` precisely so they do **not** get constrained to the surface.
+Two optional presence flags may appear on the rules:
+
+- **`keep: true`** — on `array` only: an all-dead reference no longer drops the event; instead the event is kept with the array emptied to `[]`. `value`/`interval` have no `keep` (a hard reference still sinks the event when its target is gone).
+- **`surface: true`** — on `interval` only (seq table): re-project the range onto the **surface-only** seq map instead of all survivors. This is what `surfaceOp.start` / `surfaceOp.end` use.
+
+A cell may have **no reference rule at all** (`{ rules: [] }` or empty), which keeps the event unconditionally — e.g. `command/done`, whose `sourceEventSeq` is a display-only soft reference: a value rule on it would drop the event and leave a surviving `command/run` rendering as still executing (calling forever).
+
+The **surface** is not a cell or rule flag: it is its own table, `seqSurface`, listing the event types that join the model-visible surface (message-producing nodes the surface fold keeps). A type in that list is added to the surface-only seq map; an `interval` with `surface: true` uses that map, while every other reference (`value` / `array` / `interval`) re-projects onto **all** survivors. Ordinary references like `sourceEventSeqs` — which point at plain records such as `tool/call` — leave `surface` off precisely so they do **not** get constrained to the surface.
 
 To support a third-party event type, add a cell (and list it in `seqSurface` if it produces a message):
 

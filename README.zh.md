@@ -55,12 +55,18 @@ KInterval 是逗号分隔的子句,每段按 turn 编号(从 1 开始)选择;负
 
 - **`value`** — 单个数值引用(如 `seq`)。目标不在结果中则删除该事件。
 - **`array`** — 数值数组引用(如 `sourceEventSeqs`)。过滤失效成员,仅当全部成员失效才删除。
-- **`interval`** — 闭区间引用(如 `surfaceOp.start` / `surfaceOp.end`)。与**全部**幸存的 seq 集合求交集,为空才删除。
-- **`surface-interval`** — 闭区间引用,但投影到 **surface-only** seq map(见下方 `seqSurface`)。`surfaceOp.start` / `surfaceOp.end` 用的就是它。
+- **`interval`** — 闭区间引用(如 `surfaceOp.start` / `surfaceOp.end`)。与幸存的 seq 集合求交集,为空才删除。
 - **`skip-n`** — 删除该事件及其后 `n` 个事件(固定长度),用于删除一对 prune。
 - **`skip-till`** — 一直删除直到出现类型为 `till` 的事件(含该事件);用括号匹配栈实现,因此跳过块可以嵌套。
 
-**surface 不再作为单元格或规则的标志**,而是独立成一张表 `seqSurface`,列出加入模型可见 surface 的事件类型(即产出消息、会被 surface fold 保留的节点)。列在该表里的类型会被加入 surface-only seq map;`surface-interval` 规则使用这张 map,而其它所有引用(`value` / `array` / `interval`)都投影到**全部**幸存者。普通引用如 `sourceEventSeqs`(指向 `tool/call` 等普通记录)用的是 `interval` / `array`,恰恰是为了不被限制到 surface。
+规则上还可以带两个可选的 presence 标志:
+
+- **`keep: true`** —(仅 `array`)引用全部失效时不再删除事件,而是保留事件并把数组清空为 `[]`。`value` / `interval` 没有 `keep`(硬引用目标丢失时仍会删除该事件)。
+- **`surface: true`** —(仅 `interval`、仅 seq 表)把区间投影到 **surface-only** seq map 而不是全部幸存者。`surfaceOp.start` / `surfaceOp.end` 用的就是它。
+
+单元格也可以**没有引用规则**(`{ rules: [] }` 或留空),这样事件无条件保留 — 如 `command/done`,它的 `sourceEventSeq` 只是展示用软引用:若给它配 value 规则,事件会被误删,导致存活的 `command/run` 一直渲染成"执行中"(永远调用中)。
+
+**surface 不再作为单元格或规则的标志**,而是独立成一张表 `seqSurface`,列出加入模型可见 surface 的事件类型(即产出消息、会被 surface fold 保留的节点)。列在该表里的类型会被加入 surface-only seq map;带 `surface: true` 的 `interval` 规则使用这张 map,而其它所有引用(`value` / `array` / `interval`)都投影到**全部**幸存者。普通引用如 `sourceEventSeqs`(指向 `tool/call` 等普通记录)不带 `surface`,恰恰是为了不被限制到 surface。
 
 支持第三方事件类型就加一个单元格(如果它产出消息,同时把它列进 `seqSurface`):
 

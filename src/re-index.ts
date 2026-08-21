@@ -76,7 +76,7 @@ export function reIndexEvents(
     // Inline wildcard+override merge for both tables (seq first, reused below).
     const seqCell = rules.seqRules[event.type]
     const seqRuleSet = seqCell?.override === true
-      ? seqCell.rules
+      ? seqCell.rules ?? []
       : [...(rules.seqRules['*']?.rules ?? []), ...(seqCell?.rules ?? [])]
 
     // Advance the skip state on arrival (old-seq indexed, so it moves over every
@@ -106,7 +106,7 @@ export function reIndexEvents(
 
     const turnCell = rules.turnRules[event.type]
     const turnRuleSet = turnCell?.override === true
-      ? turnCell.rules
+      ? turnCell.rules ?? []
       : [...(rules.turnRules['*']?.rules ?? []), ...(turnCell?.rules ?? [])]
 
     if (applySeqRules(reIndexed, seqRuleSet, seqMap, surfaceSeqMap)
@@ -135,7 +135,7 @@ function applyTurnRules(
     if (rule.kind === 'value') {
       if (!applyValue(event, rule.path, turnMap)) return false
     } else if (rule.kind === 'array') {
-      if (!applyArray(event, rule.path, turnMap)) return false
+      if (!applyArray(event, rule.path, turnMap, rule.keep === true)) return false
     } else if (rule.kind === 'interval') {
       if (!applyInterval(event, rule.startPath, rule.endPath, turnMap)) return false
     }
@@ -144,9 +144,9 @@ function applyTurnRules(
 }
 
 // Apply the seq rules: renumber the event's seq references. `value`/`array`/
-// `interval` use the all-survivor `seqMap`; a `surface-interval` uses the
-// surface-only `surfaceSeqMap`. `skip-n`/`skip-till` carry no refs and are
-// handled by the scan loop.
+// `interval` use the all-survivor `seqMap`; an `interval` with `surface: true`
+// uses the surface-only `surfaceSeqMap`. `skip-n`/`skip-till` carry no refs and
+// are handled by the scan loop.
 function applySeqRules(
   event: SessionEvent,
   rules: readonly SeqRule[],
@@ -157,16 +157,16 @@ function applySeqRules(
     if (rule.kind === 'value') {
       if (!applyValue(event, rule.path, seqMap)) return false
     } else if (rule.kind === 'array') {
-      if (!applyArray(event, rule.path, seqMap)) return false
+      if (!applyArray(event, rule.path, seqMap, rule.keep === true)) return false
     } else if (rule.kind === 'interval') {
-      if (!applyInterval(event, rule.startPath, rule.endPath, seqMap)) return false
-    } else if (rule.kind === 'surface-interval') {
-      if (!applyInterval(event, rule.startPath, rule.endPath, surfaceSeqMap)) return false
+      const map = rule.surface === true ? surfaceSeqMap : seqMap
+      if (!applyInterval(event, rule.startPath, rule.endPath, map)) return false
     }
   }
   return true
 }
 
+// Renumber a single numeric reference. A dead target always drops the event
 function applyValue(event: SessionEvent, path: string, map: Map<number, number>): boolean {
   const ref = dlv(event, path)
   if (typeof ref !== 'number') return true
@@ -178,12 +178,16 @@ function applyValue(event: SessionEvent, path: string, map: Map<number, number>)
   return true
 }
 
-function applyArray(event: SessionEvent, path: string, map: Map<number, number>): boolean {
+// Renumber a numeric array reference. `keep` softens an all-dead result: instead
+// of dropping the event, keep it with the array emptied to `[]`. Bail out first
+// on a genuinely dead, unkept reference; otherwise the normal write branch also
+// covers the kept-empty case.
+function applyArray(event: SessionEvent, path: string, map: Map<number, number>, keep = false): boolean {
   const ref = dlv(event, path)
   if (!Array.isArray(ref)) return true
 
   const mapped = ref.map(v => map.get(v)).filter((v): v is number => v !== undefined)
-  if (mapped.length === 0) return false
+  if (mapped.length === 0 && !keep) return false
 
   dset(event, path, mapped)
   return true

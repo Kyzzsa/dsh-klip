@@ -193,13 +193,30 @@ test('reIndexEvents: interval with empty intersection drops the replace event', 
   assert.equal(out.filter(e => e.type === 'assistant/message').length, 0)
 })
 
-test('reIndexEvents: command/done with dead sourceEventSeq is dropped', () => {
+test('reIndexEvents: command/done survives a dead sourceEventSeq (no reference rule)', () => {
   const log: SessionEvent[] = [
     turnStart(1, 0), commandDone(1, 100), turnEnd(1, 2),
   ]
-  // seq 100 does not exist → sourceEventSeq dead → command/done dropped
+  // command/done carries no reference rule, so a dead sourceEventSeq cannot sink
+  // it (the UI pairs it with command/run by commandId — a dropped done would
+  // leave the command rendering as still executing/calling forever).
   const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules })
-  assert.equal(out.filter(e => e.type === 'command/done').length, 0)
+  assert.equal(out.filter(e => e.type === 'command/done').length, 1)
+})
+
+test('reIndexEvents: array with keep survives an all-dead refs, emptied to []', () => {
+  const customSeq: SeqReIndexRules = {
+    ...seqRules,
+    'custom/event': { rules: [{ kind: 'array', path: 'data.refs', keep: true }] },
+  }
+  const log: SessionEvent[] = [
+    turnStart(1, 0), ev(1, 'custom/event', { turn: 1, refs: [90, 91] }), turnEnd(1, 2),
+  ]
+  // seqs 90,91 both dead → keep: true keeps the event, array emptied to []
+  const out = reIndexEvents(log, KInterval.from_string('1'), { turnRules, seqRules: customSeq })
+  const evt = out.find(e => e.type === 'custom/event')!
+  assert.ok(evt)
+  assert.deepEqual((evt.data as unknown as { refs: number[] }).refs, [])
 })
 
 test('reIndexEvents: session/title messageSeqs filters dead entries', () => {
